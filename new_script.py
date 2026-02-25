@@ -9,6 +9,9 @@ import os
 pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.init()
 
+desktop_info = pygame.display.Info()
+DESKTOP_W, DESKTOP_H = desktop_info.current_w, desktop_info.current_h
+
 def make_click_sound():
     sample_rate = 44100
     duration = 0.04
@@ -43,8 +46,10 @@ def save_profile(username):
 profile_username = load_profile()  # None on first launch
 
 WIDTH, HEIGHT = 800, 600
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = pygame.Surface((WIDTH, HEIGHT))          # fixed-size render target
+display_surf = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
 pygame.display.set_caption("Pixelrift")
+is_fullscreen = False
 
 # Colors
 GREY = (180, 180, 180)
@@ -412,15 +417,39 @@ clock = pygame.time.Clock()
 username_input      = ""
 show_profile_warning = False
 
+def map_mouse(raw, disp_w, disp_h):
+    """Map display-space mouse coords to 800x600 render-space coords."""
+    aspect = WIDTH / HEIGHT
+    if disp_w / disp_h > aspect:
+        sw, sh = int(disp_h * aspect), disp_h
+    else:
+        sw, sh = disp_w, int(disp_w / aspect)
+    ox, oy = (disp_w - sw) // 2, (disp_h - sh) // 2
+    rx = max(0, min(WIDTH  - 1, (raw[0] - ox) * WIDTH  // max(sw, 1)))
+    ry = max(0, min(HEIGHT - 1, (raw[1] - oy) * HEIGHT // max(sh, 1)))
+    return (rx, ry)
+
+
 while True:
-    mouse_pos = pygame.mouse.get_pos()
+    dw, dh = display_surf.get_size()
+    mouse_pos = map_mouse(pygame.mouse.get_pos(), dw, dh)
     hovered = btn_rect.collidepoint(mouse_pos) and state == STATE_HOME
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
+        if event.type == pygame.VIDEORESIZE and not is_fullscreen:
+            display_surf = pygame.display.set_mode(event.size, pygame.RESIZABLE)
         if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_F11:
+                is_fullscreen = not is_fullscreen
+                if is_fullscreen:
+                    display_surf = pygame.display.set_mode(
+                        (DESKTOP_W, DESKTOP_H), pygame.NOFRAME)
+                else:
+                    display_surf = pygame.display.set_mode(
+                        (WIDTH, HEIGHT), pygame.RESIZABLE)
             if state == STATE_CREATE_PROFILE:
                 if event.key == pygame.K_RETURN:
                     if username_input.strip():
@@ -501,5 +530,15 @@ while True:
     elif state == STATE_FOREST:
         draw_forest_level()
 
+    # Scale render surface to display window (letterboxed)
+    dw, dh = display_surf.get_size()
+    aspect = WIDTH / HEIGHT
+    if dw / dh > aspect:
+        sw, sh = int(dh * aspect), dh
+    else:
+        sw, sh = dw, int(dw / aspect)
+    scaled = pygame.transform.scale(screen, (sw, sh))
+    display_surf.fill((0, 0, 0))
+    display_surf.blit(scaled, ((dw - sw) // 2, (dh - sh) // 2))
     pygame.display.flip()
     clock.tick(60)
