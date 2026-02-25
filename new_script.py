@@ -414,11 +414,11 @@ def draw_forest_level():
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x, player_y, PLAYER_W, PLAYER_H), 3)
 
-SETTINGS_LEFT_W  = WIDTH // 3
+SETTINGS_LEFT_W  = 300
 SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W
 
 CATEGORIES   = ["Audio", "Accessibility", "Performance", "Account"]
-CAT_Y_START  = 75
+CAT_Y_START  = 128
 CAT_SPACING  = 35
 
 SLIDER_W = 210
@@ -446,8 +446,8 @@ def draw_settings(mouse_pos):
     draw_cross_button(screen, cross_btn_rect, cross_btn_rect.collidepoint(mouse_pos))
 
     # ── LEFT PANEL ────────────────────────────────────────────────────────────
-    pixel_text(screen, "Settings", 2, WHITE, SETTINGS_LEFT_W // 2, 15)
-    pygame.draw.line(screen, WHITE, (8, 57), (SETTINGS_LEFT_W - 8, 57), 1)
+    pixel_text(screen, "Settings", 2, WHITE, SETTINGS_LEFT_W // 2, 73)
+    pygame.draw.line(screen, WHITE, (8, 113), (SETTINGS_LEFT_W - 8, 113), 1)
 
     for i, cat in enumerate(CATEGORIES):
         cat_y = CAT_Y_START + i * CAT_SPACING
