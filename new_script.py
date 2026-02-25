@@ -65,7 +65,8 @@ pixel_font_small = pygame.font.SysFont("Courier New", 16, bold=True)
 
 # Button dimensions
 BTN_W, BTN_H = 220, 70
-btn_rect = pygame.Rect((WIDTH // 2 - BTN_W // 2, HEIGHT // 2 - BTN_H // 2), (BTN_W, BTN_H))
+btn_rect          = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 - BTN_H // 2, BTN_W, BTN_H)
+settings_btn_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15, BTN_W, BTN_H)
 
 def pixel_round_rect_points(rect, step=8):
     """Returns octagon points that simulate pixel-art stepped rounded corners."""
@@ -145,7 +146,7 @@ def make_logo():
 
 logo_surf = make_logo()
 
-def draw_home(hovered):
+def draw_home(hovered, settings_hovered):
     # Grey placeholder background
     screen.fill(GREY)
 
@@ -158,6 +159,7 @@ def draw_home(hovered):
     screen.blit(logo_surf, (WIDTH // 2 - logo_surf.get_width() // 2, 40))
 
     draw_pixel_button(screen, btn_rect, "Play", hovered)
+    draw_pixel_button(screen, settings_btn_rect, "Settings", settings_hovered)
 
     # Username — bottom-right corner
     if profile_username:
@@ -412,6 +414,28 @@ def draw_forest_level():
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x, player_y, PLAYER_W, PLAYER_H), 3)
 
+SETTINGS_LEFT_W = WIDTH // 4       # 200px  — 1/4 of screen
+SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W  # 600px — 3/4 of screen
+
+def draw_settings():
+    # Draw home background behind the panels
+    screen.fill(GREY)
+    screen.blit(logo_surf, (WIDTH // 2 - logo_surf.get_width() // 2, 40))
+
+    # Left panel — 75% opacity black
+    left_panel = pygame.Surface((SETTINGS_LEFT_W, HEIGHT), pygame.SRCALPHA)
+    left_panel.fill((0, 0, 0, 191))
+    screen.blit(left_panel, (0, 0))
+
+    # Right panel — 55% opacity black
+    right_panel = pygame.Surface((SETTINGS_RIGHT_W, HEIGHT), pygame.SRCALPHA)
+    right_panel.fill((0, 0, 0, 140))
+    screen.blit(right_panel, (SETTINGS_LEFT_W, 0))
+
+    # Divider line — fully opaque white
+    pygame.draw.line(screen, WHITE, (SETTINGS_LEFT_W, 0), (SETTINGS_LEFT_W, HEIGHT), 2)
+
+
 def draw_pause_menu(mouse_pos):
     # Semi-transparent black box
     overlay = pygame.Surface((PAUSE_BOX_W, PAUSE_BOX_H), pygame.SRCALPHA)
@@ -433,6 +457,7 @@ STATE_HOME           = "home"
 STATE_LEVEL_SELECT   = "level_select"
 STATE_FOREST         = "forest"
 STATE_PAUSED         = "paused"
+STATE_SETTINGS       = "settings"
 STATE_CREATE_PROFILE = "create_profile"
 state = STATE_CREATE_PROFILE if profile_username is None else STATE_HOME
 
@@ -451,7 +476,8 @@ def map_mouse(raw, disp_w, disp_h):
 while True:
     dw, dh = display_surf.get_size()
     mouse_pos = map_mouse(pygame.mouse.get_pos(), dw, dh)
-    hovered = btn_rect.collidepoint(mouse_pos) and state == STATE_HOME
+    hovered          = btn_rect.collidepoint(mouse_pos)          and state == STATE_HOME
+    settings_hovered = settings_btn_rect.collidepoint(mouse_pos) and state == STATE_HOME
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -484,7 +510,10 @@ while True:
                     username_input += event.unicode
                     show_profile_warning = False
             if event.key == pygame.K_ESCAPE:
-                if state == STATE_LEVEL_SELECT:
+                if state == STATE_SETTINGS:
+                    click_sound.play()
+                    state = STATE_HOME
+                elif state == STATE_LEVEL_SELECT:
                     click_sound.play()
                     state = STATE_HOME
                 elif state == STATE_FOREST:
@@ -509,6 +538,9 @@ while True:
             elif state == STATE_HOME and hovered:
                 click_sound.play()
                 state = STATE_LEVEL_SELECT
+            elif state == STATE_HOME and settings_hovered:
+                click_sound.play()
+                state = STATE_SETTINGS
             elif state == STATE_LEVEL_SELECT:
                 if cross_btn_rect.collidepoint(mouse_pos):
                     click_sound.play()
@@ -551,7 +583,9 @@ while True:
         confirm_hovered = confirm_btn_rect.collidepoint(mouse_pos)
         draw_create_profile(username_input, confirm_hovered, show_profile_warning)
     elif state == STATE_HOME:
-        draw_home(hovered)
+        draw_home(hovered, settings_hovered)
+    elif state == STATE_SETTINGS:
+        draw_settings()
     elif state == STATE_LEVEL_SELECT:
         draw_level_select(mouse_pos)
     elif state == STATE_FOREST:
