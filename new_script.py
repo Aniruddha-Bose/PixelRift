@@ -182,6 +182,13 @@ arrow_cy = card_rect.centery
 left_arrow_rect  = pygame.Rect(card_rect.left - 80,  arrow_cy - ARROW_H // 2, ARROW_W, ARROW_H)
 right_arrow_rect = pygame.Rect(card_rect.right + 25, arrow_cy - ARROW_H // 2, ARROW_W, ARROW_H)
 
+# Pause menu
+PAUSE_BOX_W, PAUSE_BOX_H = 340, 270
+pause_box_rect    = pygame.Rect(WIDTH // 2 - PAUSE_BOX_W // 2, HEIGHT // 2 - PAUSE_BOX_H // 2,
+                                PAUSE_BOX_W, PAUSE_BOX_H)
+pause_resume_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, pause_box_rect.y + 100, BTN_W, BTN_H)
+pause_exit_rect   = pygame.Rect(WIDTH // 2 - BTN_W // 2, pause_box_rect.y + 185, BTN_W, BTN_H)
+
 # Level data
 level_data = {
     "Forest": {"difficulty": "Easy", "status": "Not Started", "time": "--:--"},
@@ -405,10 +412,27 @@ def draw_forest_level():
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x, player_y, PLAYER_W, PLAYER_H), 3)
 
+def draw_pause_menu(mouse_pos):
+    # Semi-transparent black box
+    overlay = pygame.Surface((PAUSE_BOX_W, PAUSE_BOX_H), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 210))
+    screen.blit(overlay, pause_box_rect.topleft)
+
+    # "Paused" heading — white, top center of box
+    pixel_text(screen, "Paused", 3, WHITE, WIDTH // 2, pause_box_rect.y + 22)
+
+    # Buttons
+    draw_pixel_button(screen, pause_resume_rect, "Resume",
+                      pause_resume_rect.collidepoint(mouse_pos))
+    draw_pixel_button(screen, pause_exit_rect, "Exit Level",
+                      pause_exit_rect.collidepoint(mouse_pos))
+
+
 # Game states
 STATE_HOME           = "home"
 STATE_LEVEL_SELECT   = "level_select"
 STATE_FOREST         = "forest"
+STATE_PAUSED         = "paused"
 STATE_CREATE_PROFILE = "create_profile"
 state = STATE_CREATE_PROFILE if profile_username is None else STATE_HOME
 
@@ -465,7 +489,10 @@ while True:
                     state = STATE_HOME
                 elif state == STATE_FOREST:
                     click_sound.play()
-                    state = STATE_LEVEL_SELECT
+                    state = STATE_PAUSED
+                elif state == STATE_PAUSED:
+                    click_sound.play()
+                    state = STATE_FOREST
             if event.key == pygame.K_SPACE and state == STATE_FOREST and player_y >= GROUND_Y:
                 player_vy = JUMP_FORCE
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -498,6 +525,13 @@ while True:
                 elif right_arrow_rect.collidepoint(mouse_pos):
                     click_sound.play()
                     level_index = (level_index + 1) % len(levels)
+            elif state == STATE_PAUSED:
+                if pause_resume_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    state = STATE_FOREST
+                elif pause_exit_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    state = STATE_LEVEL_SELECT
 
     if state == STATE_FOREST:
         keys = pygame.key.get_pressed()
@@ -522,6 +556,9 @@ while True:
         draw_level_select(mouse_pos)
     elif state == STATE_FOREST:
         draw_forest_level()
+    elif state == STATE_PAUSED:
+        draw_forest_level()
+        draw_pause_menu(mouse_pos)
 
     # Scale render surface to fill the entire display
     dw, dh = display_surf.get_size()
