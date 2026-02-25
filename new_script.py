@@ -439,7 +439,7 @@ CAT_SPACING  = 35
 SLIDER_W = 210
 SLIDER_H = 8
 SLIDER_X = SETTINGS_LEFT_W + 120
-SLIDER_Y = 140
+SLIDER_Y = 90
 
 # Username change modal
 MODAL_W, MODAL_H     = 390, 330
@@ -497,7 +497,7 @@ def draw_settings(mouse_pos):
                          (SETTINGS_LEFT_W + 12, 57), (WIDTH - 12, 57), 1)
 
         # Volume row
-        pixel_text(screen, "Volume", 1, WHITE, SETTINGS_LEFT_W + 55, 132)
+        pixel_text(screen, "Volume", 1, WHITE, SETTINGS_LEFT_W + 55, 86)
 
         # Track
         pygame.draw.rect(screen, DARK_GREY, (SLIDER_X, SLIDER_Y, SLIDER_W, SLIDER_H))
@@ -509,7 +509,7 @@ def draw_settings(mouse_pos):
         pygame.draw.rect(screen, WHITE, (hx - 5, SLIDER_Y - 7, 10, SLIDER_H + 14))
         # Percentage
         pixel_text(screen, str(int(master_volume * 100)) + "%", 1, WHITE,
-                   SLIDER_X + SLIDER_W + 32, 132)
+                   SLIDER_X + SLIDER_W + 32, 86)
 
     elif settings_category == "account":
         pixel_text(screen, "Account Settings", 2, WHITE, rcx, 15)
