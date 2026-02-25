@@ -350,6 +350,10 @@ DIRT_LITE  = (140, 102, 62)
 TILE = 32
 GROUND_ROW = (HEIGHT // TILE) - 4  # tile row where grass starts
 
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+grass_tile = pygame.transform.scale(
+    pygame.image.load(os.path.join(ASSETS_DIR, "grass.png")), (TILE, TILE))
+
 # Player
 PLAYER_W, PLAYER_H = 28, 44
 PLAYER_SPEED = 4
@@ -382,12 +386,7 @@ def draw_forest_level():
             rng = random.Random(row * 997 + col * 31)  # deterministic per tile
 
             if row == GROUND_ROW:
-                # Full grass tile
-                pygame.draw.rect(screen, GRASS_MID, (x, y, TILE, TILE))
-                pygame.draw.rect(screen, GRASS_LITE, (x, y, TILE, 5))
-                for _ in range(5):
-                    pygame.draw.rect(screen, GRASS_DARK,
-                        (x + rng.randint(1, TILE-3), y + rng.randint(6, TILE-3), 2, 2))
+                screen.blit(grass_tile, (x, y))
 
             elif row == GROUND_ROW + 1:
                 # Transition tile: top ~60% grass, bottom ~40% dirt blending in
