@@ -414,11 +414,19 @@ def draw_forest_level():
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x, player_y, PLAYER_W, PLAYER_H), 3)
 
-SETTINGS_LEFT_W  = WIDTH // 3            # 1/3 of screen
-SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W  # 2/3 of screen
+SETTINGS_LEFT_W  = WIDTH // 3
+SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W
 
-def draw_settings():
-    # Grey background only — no logo
+CATEGORIES   = ["Audio", "Accessibility", "Performance", "Account"]
+CAT_Y_START  = 75
+CAT_SPACING  = 35
+
+SLIDER_W = 210
+SLIDER_H = 8
+SLIDER_X = SETTINGS_LEFT_W + 120
+SLIDER_Y = 140
+
+def draw_settings(mouse_pos):
     screen.fill(GREY)
 
     # Left panel — 85% opacity black
@@ -433,6 +441,43 @@ def draw_settings():
 
     # Divider line — fully opaque white
     pygame.draw.line(screen, WHITE, (SETTINGS_LEFT_W, 0), (SETTINGS_LEFT_W, HEIGHT), 2)
+
+    # ── LEFT PANEL ────────────────────────────────────────────────────────────
+    pixel_text(screen, "Settings", 2, WHITE, SETTINGS_LEFT_W // 2, 15)
+    pygame.draw.line(screen, WHITE, (8, 57), (SETTINGS_LEFT_W - 8, 57), 1)
+
+    for i, cat in enumerate(CATEGORIES):
+        cat_y = CAT_Y_START + i * CAT_SPACING
+        is_selected = settings_category == cat.lower()
+        if is_selected:
+            hl = pygame.Surface((SETTINGS_LEFT_W, 28), pygame.SRCALPHA)
+            hl.fill((255, 255, 255, 45))
+            screen.blit(hl, (0, cat_y - 5))
+        color = LIGHT_GREEN if is_selected else WHITE
+        pixel_text(screen, cat, 1, color, SETTINGS_LEFT_W // 2, cat_y)
+
+    # ── RIGHT PANEL ───────────────────────────────────────────────────────────
+    rcx = SETTINGS_LEFT_W + SETTINGS_RIGHT_W // 2
+
+    if settings_category == "audio":
+        pixel_text(screen, "Audio Settings", 2, WHITE, rcx, 15)
+        pygame.draw.line(screen, WHITE,
+                         (SETTINGS_LEFT_W + 12, 57), (WIDTH - 12, 57), 1)
+
+        # Volume row
+        pixel_text(screen, "Volume", 1, WHITE, SETTINGS_LEFT_W + 55, 132)
+
+        # Track
+        pygame.draw.rect(screen, DARK_GREY, (SLIDER_X, SLIDER_Y, SLIDER_W, SLIDER_H))
+        fill_w = int(master_volume * SLIDER_W)
+        if fill_w > 0:
+            pygame.draw.rect(screen, GREEN, (SLIDER_X, SLIDER_Y, fill_w, SLIDER_H))
+        # Handle
+        hx = SLIDER_X + fill_w
+        pygame.draw.rect(screen, WHITE, (hx - 5, SLIDER_Y - 7, 10, SLIDER_H + 14))
+        # Percentage
+        pixel_text(screen, str(int(master_volume * 100)) + "%", 1, WHITE,
+                   SLIDER_X + SLIDER_W + 32, 132)
 
 
 def draw_pause_menu(mouse_pos):
@@ -462,8 +507,11 @@ state = STATE_CREATE_PROFILE if profile_username is None else STATE_HOME
 
 clock = pygame.time.Clock()
 
-username_input      = ""
+username_input       = ""
 show_profile_warning = False
+settings_category    = "audio"
+master_volume        = 1.0
+slider_dragging      = False
 
 def map_mouse(raw, disp_w, disp_h):
     """Map display-space mouse coords to 800x600 render-space coords."""
@@ -563,6 +611,26 @@ while True:
                 elif pause_exit_rect.collidepoint(mouse_pos):
                     click_sound.play()
                     state = STATE_LEVEL_SELECT
+            elif state == STATE_SETTINGS:
+                for i, cat in enumerate(CATEGORIES):
+                    cat_y = CAT_Y_START + i * CAT_SPACING
+                    if pygame.Rect(0, cat_y - 5, SETTINGS_LEFT_W, 28).collidepoint(mouse_pos):
+                        click_sound.play()
+                        settings_category = cat.lower()
+                        break
+                if settings_category == "audio":
+                    hit = pygame.Rect(SLIDER_X - 5, SLIDER_Y - 10, SLIDER_W + 10, SLIDER_H + 20)
+                    if hit.collidepoint(mouse_pos):
+                        slider_dragging = True
+                        master_volume = max(0.0, min(1.0,
+                            (mouse_pos[0] - SLIDER_X) / SLIDER_W))
+                        click_sound.set_volume(master_volume)
+        if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            slider_dragging = False
+        if event.type == pygame.MOUSEMOTION and slider_dragging:
+            master_volume = max(0.0, min(1.0,
+                (mouse_pos[0] - SLIDER_X) / SLIDER_W))
+            click_sound.set_volume(master_volume)
 
     if state == STATE_FOREST:
         keys = pygame.key.get_pressed()
@@ -584,7 +652,7 @@ while True:
     elif state == STATE_HOME:
         draw_home(hovered, settings_hovered)
     elif state == STATE_SETTINGS:
-        draw_settings()
+        draw_settings(mouse_pos)
     elif state == STATE_LEVEL_SELECT:
         draw_level_select(mouse_pos)
     elif state == STATE_FOREST:
