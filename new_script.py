@@ -419,14 +419,8 @@ show_profile_warning = False
 
 def map_mouse(raw, disp_w, disp_h):
     """Map display-space mouse coords to 800x600 render-space coords."""
-    aspect = WIDTH / HEIGHT
-    if disp_w / disp_h > aspect:
-        sw, sh = int(disp_h * aspect), disp_h
-    else:
-        sw, sh = disp_w, int(disp_w / aspect)
-    ox, oy = (disp_w - sw) // 2, (disp_h - sh) // 2
-    rx = max(0, min(WIDTH  - 1, (raw[0] - ox) * WIDTH  // max(sw, 1)))
-    ry = max(0, min(HEIGHT - 1, (raw[1] - oy) * HEIGHT // max(sh, 1)))
+    rx = raw[0] * WIDTH  // max(disp_w, 1)
+    ry = raw[1] * HEIGHT // max(disp_h, 1)
     return (rx, ry)
 
 
@@ -445,8 +439,7 @@ while True:
             if event.key == pygame.K_F11:
                 is_fullscreen = not is_fullscreen
                 if is_fullscreen:
-                    display_surf = pygame.display.set_mode(
-                        (DESKTOP_W, DESKTOP_H), pygame.NOFRAME)
+                    display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
                 else:
                     display_surf = pygame.display.set_mode(
                         (WIDTH, HEIGHT), pygame.RESIZABLE)
@@ -530,15 +523,9 @@ while True:
     elif state == STATE_FOREST:
         draw_forest_level()
 
-    # Scale render surface to display window (letterboxed)
+    # Scale render surface to fill the entire display
     dw, dh = display_surf.get_size()
-    aspect = WIDTH / HEIGHT
-    if dw / dh > aspect:
-        sw, sh = int(dh * aspect), dh
-    else:
-        sw, sh = dw, int(dw / aspect)
-    scaled = pygame.transform.scale(screen, (sw, sh))
-    display_surf.fill((0, 0, 0))
-    display_surf.blit(scaled, ((dw - sw) // 2, (dh - sh) // 2))
+    scaled = pygame.transform.scale(screen, (dw, dh))
+    display_surf.blit(scaled, (0, 0))
     pygame.display.flip()
     clock.tick(60)
