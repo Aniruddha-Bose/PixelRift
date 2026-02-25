@@ -442,10 +442,10 @@ SLIDER_X = SETTINGS_LEFT_W + 120
 SLIDER_Y = 140
 
 # Username change modal
-MODAL_W, MODAL_H     = 390, 270
-modal_rect           = pygame.Rect(WIDTH // 2 - 195, HEIGHT // 2 - 135, MODAL_W, MODAL_H)
+MODAL_W, MODAL_H     = 390, 330
+modal_rect           = pygame.Rect(WIDTH // 2 - 195, HEIGHT // 2 - 165, MODAL_W, MODAL_H)
 MODAL_INPUT_W        = 330
-modal_input_rect     = pygame.Rect(WIDTH // 2 - MODAL_INPUT_W // 2, modal_rect.y + 90, MODAL_INPUT_W, 40)
+modal_input_rect     = pygame.Rect(WIDTH // 2 - MODAL_INPUT_W // 2, modal_rect.y + 150, MODAL_INPUT_W, 40)
 MODAL_BTN_W, MODAL_BTN_H = 145, 55
 modal_confirm_rect   = pygame.Rect(modal_rect.right - MODAL_BTN_W - 15,
                                    modal_rect.bottom - MODAL_BTN_H - 15, MODAL_BTN_W, MODAL_BTN_H)
@@ -536,11 +536,17 @@ def draw_username_modal(mouse_pos):
     pygame.draw.rect(screen, (25, 25, 25), modal_rect)
     pygame.draw.rect(screen, WHITE, modal_rect, 2)
 
-    # Heading
-    pixel_text(screen, "Change Username", 2, WHITE, WIDTH // 2, modal_rect.y + 16)
+    # Current username
+    pixel_text(screen, "Current username", 1, DARK_GREY, WIDTH // 2, modal_rect.y + 14)
+    if profile_username:
+        pixel_text(screen, profile_username, 2, WHITE, WIDTH // 2, modal_rect.y + 36)
+
     pygame.draw.line(screen, WHITE,
-                     (modal_rect.x + 10, modal_rect.y + 56),
-                     (modal_rect.right - 10, modal_rect.y + 56), 1)
+                     (modal_rect.x + 10, modal_rect.y + 75),
+                     (modal_rect.right - 10, modal_rect.y + 75), 1)
+
+    # Change username heading
+    pixel_text(screen, "Change Username", 2, WHITE, WIDTH // 2, modal_rect.y + 85)
 
     # Input box
     pygame.draw.rect(screen, BLACK, modal_input_rect)
