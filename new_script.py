@@ -59,6 +59,8 @@ DARK_GREEN = (70, 140, 40)
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 LIGHT_GREEN = (120, 220, 100)
+RED         = (210, 60,  60)
+DARK_RED    = (160, 40,  40)
 
 # Small pixel font — rendered small then scaled up for chunky pixel look
 pixel_font_small = pygame.font.SysFont("Courier New", 16, bold=True)
@@ -104,6 +106,19 @@ def draw_pixel_button(surface, rect, text, hovered):
     lx = rect.centerx - label.get_width() // 2
     ly = rect.centery - label.get_height() // 2
     surface.blit(label, (lx, ly))
+
+def draw_red_button(surface, rect, text, hovered):
+    color = DARK_RED if hovered else RED
+    pts = pixel_round_rect_points(rect, step=8)
+    pygame.draw.polygon(surface, color, pts)
+    border = 4
+    for i in range(len(pts)):
+        pygame.draw.line(surface, BLACK, pts[i], pts[(i + 1) % len(pts)], border)
+    label_raw = pixel_font_small.render(text, False, BLACK)
+    w, h = label_raw.get_size()
+    label = pygame.transform.scale(label_raw, (w * 2, h * 2))
+    surface.blit(label, (rect.centerx - label.get_width() // 2,
+                          rect.centery - label.get_height() // 2))
 
 # Hand-drawn pixel art characters for the PIXELRIFT logo (5 wide x 7 tall grid)
 PIXEL_CHARS = {
@@ -426,6 +441,20 @@ SLIDER_H = 8
 SLIDER_X = SETTINGS_LEFT_W + 120
 SLIDER_Y = 140
 
+# Username change modal
+MODAL_W, MODAL_H     = 390, 270
+modal_rect           = pygame.Rect(WIDTH // 2 - 195, HEIGHT // 2 - 135, MODAL_W, MODAL_H)
+MODAL_INPUT_W        = 330
+modal_input_rect     = pygame.Rect(WIDTH // 2 - MODAL_INPUT_W // 2, modal_rect.y + 90, MODAL_INPUT_W, 40)
+MODAL_BTN_W, MODAL_BTN_H = 145, 55
+modal_confirm_rect   = pygame.Rect(modal_rect.right - MODAL_BTN_W - 15,
+                                   modal_rect.bottom - MODAL_BTN_H - 15, MODAL_BTN_W, MODAL_BTN_H)
+modal_cancel_rect    = pygame.Rect(modal_rect.left + 15,
+                                   modal_rect.bottom - MODAL_BTN_H - 15, MODAL_BTN_W, MODAL_BTN_H)
+
+# Account settings username box
+username_box_rect = pygame.Rect(SETTINGS_LEFT_W + 145, 82, 180, 28)
+
 def draw_settings(mouse_pos):
     screen.fill(GREY)
 
@@ -482,6 +511,53 @@ def draw_settings(mouse_pos):
         pixel_text(screen, str(int(master_volume * 100)) + "%", 1, WHITE,
                    SLIDER_X + SLIDER_W + 32, 132)
 
+    elif settings_category == "account":
+        pixel_text(screen, "Account Settings", 2, WHITE, rcx, 15)
+        pygame.draw.line(screen, WHITE,
+                         (SETTINGS_LEFT_W + 12, 57), (WIDTH - 12, 57), 1)
+
+        # Username row
+        pixel_text(screen, "Username", 1, WHITE, SETTINGS_LEFT_W + 68, 86)
+        pygame.draw.rect(screen, BLACK, username_box_rect)
+        pygame.draw.rect(screen, WHITE, username_box_rect, 2)
+        if profile_username:
+            raw = pixel_font_small.render(profile_username, False, WHITE)
+            ty = username_box_rect.centery - raw.get_height() // 2
+            screen.blit(raw, (username_box_rect.x + 6, ty))
+
+
+def draw_username_modal(mouse_pos):
+    # Full-screen dim
+    dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    dim.fill((0, 0, 0, 160))
+    screen.blit(dim, (0, 0))
+
+    # Modal box
+    pygame.draw.rect(screen, (25, 25, 25), modal_rect)
+    pygame.draw.rect(screen, WHITE, modal_rect, 2)
+
+    # Heading
+    pixel_text(screen, "Change Username", 2, WHITE, WIDTH // 2, modal_rect.y + 16)
+    pygame.draw.line(screen, WHITE,
+                     (modal_rect.x + 10, modal_rect.y + 56),
+                     (modal_rect.right - 10, modal_rect.y + 56), 1)
+
+    # Input box
+    pygame.draw.rect(screen, BLACK, modal_input_rect)
+    pygame.draw.rect(screen, WHITE, modal_input_rect, 2)
+    if username_modal_input:
+        raw = pixel_font_small.render(username_modal_input, False, WHITE)
+    else:
+        raw = pixel_font_small.render("type here...", False, DARK_GREY)
+    screen.blit(raw, (modal_input_rect.x + 6,
+                      modal_input_rect.centery - raw.get_height() // 2))
+
+    # Confirm (green) and Cancel (red) buttons
+    draw_pixel_button(screen, modal_confirm_rect, "Confirm",
+                      modal_confirm_rect.collidepoint(mouse_pos))
+    draw_red_button(screen, modal_cancel_rect, "Cancel",
+                    modal_cancel_rect.collidepoint(mouse_pos))
+
 
 def draw_pause_menu(mouse_pos):
     # Semi-transparent black box
@@ -515,6 +591,8 @@ show_profile_warning = False
 settings_category    = "audio"
 master_volume        = 1.0
 slider_dragging      = False
+show_username_modal  = False
+username_modal_input = ""
 
 def map_mouse(raw, disp_w, disp_h):
     """Map display-space mouse coords to 800x600 render-space coords."""
@@ -543,7 +621,22 @@ while True:
                 else:
                     display_surf = pygame.display.set_mode(
                         (WIDTH, HEIGHT), pygame.RESIZABLE)
-            if state == STATE_CREATE_PROFILE:
+            if show_username_modal:
+                if event.key == pygame.K_RETURN:
+                    if username_modal_input.strip():
+                        profile_username = username_modal_input.strip()
+                        save_profile(profile_username)
+                        click_sound.play()
+                    show_username_modal = False
+                    username_modal_input = ""
+                elif event.key == pygame.K_BACKSPACE:
+                    username_modal_input = username_modal_input[:-1]
+                elif event.key == pygame.K_ESCAPE:
+                    show_username_modal = False
+                    username_modal_input = ""
+                elif len(username_modal_input) < INPUT_MAX and event.unicode.isprintable():
+                    username_modal_input += event.unicode
+            elif state == STATE_CREATE_PROFILE:
                 if event.key == pygame.K_RETURN:
                     if username_input.strip():
                         profile_username = username_input.strip()
@@ -559,7 +652,7 @@ while True:
                 elif len(username_input) < INPUT_MAX and event.unicode.isprintable():
                     username_input += event.unicode
                     show_profile_warning = False
-            if event.key == pygame.K_ESCAPE:
+            if event.key == pygame.K_ESCAPE and not show_username_modal:
                 if state == STATE_SETTINGS:
                     click_sound.play()
                     state = STATE_HOME
@@ -615,25 +708,42 @@ while True:
                     click_sound.play()
                     state = STATE_LEVEL_SELECT
             elif state == STATE_SETTINGS:
-                if cross_btn_rect.collidepoint(mouse_pos):
-                    click_sound.play()
-                    state = STATE_HOME
-                for i, cat in enumerate(CATEGORIES):
-                    cat_y = CAT_Y_START + i * CAT_SPACING
-                    if pygame.Rect(0, cat_y - 5, SETTINGS_LEFT_W, 28).collidepoint(mouse_pos):
+                if show_username_modal:
+                    if modal_confirm_rect.collidepoint(mouse_pos):
+                        if username_modal_input.strip():
+                            profile_username = username_modal_input.strip()
+                            save_profile(profile_username)
+                            click_sound.play()
+                        show_username_modal = False
+                        username_modal_input = ""
+                    elif modal_cancel_rect.collidepoint(mouse_pos):
                         click_sound.play()
-                        settings_category = cat.lower()
-                        break
-                if settings_category == "audio":
-                    hit = pygame.Rect(SLIDER_X - 5, SLIDER_Y - 10, SLIDER_W + 10, SLIDER_H + 20)
-                    if hit.collidepoint(mouse_pos):
-                        slider_dragging = True
-                        master_volume = max(0.0, min(1.0,
-                            (mouse_pos[0] - SLIDER_X) / SLIDER_W))
-                        click_sound.set_volume(master_volume)
+                        show_username_modal = False
+                        username_modal_input = ""
+                else:
+                    if cross_btn_rect.collidepoint(mouse_pos):
+                        click_sound.play()
+                        state = STATE_HOME
+                    for i, cat in enumerate(CATEGORIES):
+                        cat_y = CAT_Y_START + i * CAT_SPACING
+                        if pygame.Rect(0, cat_y - 5, SETTINGS_LEFT_W, 28).collidepoint(mouse_pos):
+                            click_sound.play()
+                            settings_category = cat.lower()
+                            break
+                    if settings_category == "audio":
+                        hit = pygame.Rect(SLIDER_X - 5, SLIDER_Y - 10, SLIDER_W + 10, SLIDER_H + 20)
+                        if hit.collidepoint(mouse_pos):
+                            slider_dragging = True
+                            master_volume = max(0.0, min(1.0,
+                                (mouse_pos[0] - SLIDER_X) / SLIDER_W))
+                            click_sound.set_volume(master_volume)
+                    elif settings_category == "account":
+                        if username_box_rect.collidepoint(mouse_pos):
+                            show_username_modal = True
+                            username_modal_input = ""
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             slider_dragging = False
-        if event.type == pygame.MOUSEMOTION and slider_dragging:
+        if event.type == pygame.MOUSEMOTION and slider_dragging and not show_username_modal:
             master_volume = max(0.0, min(1.0,
                 (mouse_pos[0] - SLIDER_X) / SLIDER_W))
             click_sound.set_volume(master_volume)
@@ -659,6 +769,8 @@ while True:
         draw_home(hovered, settings_hovered)
     elif state == STATE_SETTINGS:
         draw_settings(mouse_pos)
+        if show_username_modal:
+            draw_username_modal(mouse_pos)
     elif state == STATE_LEVEL_SELECT:
         draw_level_select(mouse_pos)
     elif state == STATE_FOREST:
