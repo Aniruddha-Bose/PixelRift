@@ -442,6 +442,9 @@ def draw_settings(mouse_pos):
     # Divider line — fully opaque white
     pygame.draw.line(screen, WHITE, (SETTINGS_LEFT_W, 0), (SETTINGS_LEFT_W, HEIGHT), 2)
 
+    # Close button — top left
+    draw_cross_button(screen, cross_btn_rect, cross_btn_rect.collidepoint(mouse_pos))
+
     # ── LEFT PANEL ────────────────────────────────────────────────────────────
     pixel_text(screen, "Settings", 2, WHITE, SETTINGS_LEFT_W // 2, 15)
     pygame.draw.line(screen, WHITE, (8, 57), (SETTINGS_LEFT_W - 8, 57), 1)
@@ -612,6 +615,9 @@ while True:
                     click_sound.play()
                     state = STATE_LEVEL_SELECT
             elif state == STATE_SETTINGS:
+                if cross_btn_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    state = STATE_HOME
                 for i, cat in enumerate(CATEGORIES):
                     cat_y = CAT_Y_START + i * CAT_SPACING
                     if pygame.Rect(0, cat_y - 5, SETTINGS_LEFT_W, 28).collidepoint(mouse_pos):
