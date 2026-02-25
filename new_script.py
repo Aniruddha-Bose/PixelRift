@@ -414,22 +414,21 @@ def draw_forest_level():
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x, player_y, PLAYER_W, PLAYER_H), 3)
 
-SETTINGS_LEFT_W = WIDTH // 4       # 200px  — 1/4 of screen
-SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W  # 600px — 3/4 of screen
+SETTINGS_LEFT_W  = WIDTH // 3            # 1/3 of screen
+SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W  # 2/3 of screen
 
 def draw_settings():
-    # Draw home background behind the panels
+    # Grey background only — no logo
     screen.fill(GREY)
-    screen.blit(logo_surf, (WIDTH // 2 - logo_surf.get_width() // 2, 40))
 
-    # Left panel — 75% opacity black
+    # Left panel — 85% opacity black
     left_panel = pygame.Surface((SETTINGS_LEFT_W, HEIGHT), pygame.SRCALPHA)
-    left_panel.fill((0, 0, 0, 191))
+    left_panel.fill((0, 0, 0, 216))
     screen.blit(left_panel, (0, 0))
 
-    # Right panel — 55% opacity black
+    # Right panel — 60% opacity black
     right_panel = pygame.Surface((SETTINGS_RIGHT_W, HEIGHT), pygame.SRCALPHA)
-    right_panel.fill((0, 0, 0, 140))
+    right_panel.fill((0, 0, 0, 153))
     screen.blit(right_panel, (SETTINGS_LEFT_W, 0))
 
     # Divider line — fully opaque white
