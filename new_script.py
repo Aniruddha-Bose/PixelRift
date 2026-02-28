@@ -4,6 +4,7 @@ import array
 import math
 import json
 import os
+import ctypes
 
 pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.init()
@@ -113,15 +114,28 @@ def save_settings():
         "vsync_enabled": vsync_enabled,
         "max_fps": max_fps,
         "alloted_ram": alloted_ram,
+        "display_mode": display_mode,
     }
     with open(SETTINGS_PATH, "w") as f:
         json.dump(data, f)
 
 WIDTH, HEIGHT = 800, 600
 screen = pygame.Surface((WIDTH, HEIGHT))          # fixed-size render target
-display_surf = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+_init_saved = load_settings()
+_init_display = _init_saved.get("display_mode", "Windowed")
+if _init_display == "Fullscreen":
+    display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    is_fullscreen = True
+elif _init_display == "Windowed":
+    display_surf = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+    is_fullscreen = False
+else:  # Off
+    display_surf = pygame.display.set_mode((WIDTH, HEIGHT))
+    is_fullscreen = False
 pygame.display.set_caption("Pixelrift")
-is_fullscreen = False
+if _init_display == "Windowed":
+    hwnd = pygame.display.get_wm_info()["window"]
+    ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
 
 # Colors
 GREY = (180, 180, 180)
@@ -435,9 +449,16 @@ grass_dirt_tile = pygame.transform.scale(
 dirt_tile = pygame.transform.scale(
     pygame.image.load(os.path.join(ASSETS_DIR, "dirt.png")), (TILE, TILE))
 
+COIN_SIZE = 20
+_coin_raw = pygame.image.load(os.path.join(ASSETS_DIR, "coin.png")).convert_alpha()
+_coin_raw = pygame.transform.scale(_coin_raw, (COIN_SIZE, COIN_SIZE))
+_coin_raw.set_colorkey((255, 255, 255))  # remove white pixels
+coin_img = _coin_raw
+
 # Player
 PLAYER_W, PLAYER_H = 28, 44
-PLAYER_SPEED = 2
+PLAYER_SPEED = 2              # sprint speed (pixels/frame)
+WALK_SPEED   = 1.07           # walk speed (~2 tiles/sec at 60fps)
 JUMP_FORCE   = -13
 GRAVITY      = 0.55
 PLAYER_COLOR   = (220, 100, 50)
@@ -450,16 +471,23 @@ player_vy = 0.0                            # vertical velocity
 player_dead = False
 player_on_ground = False                   # True when standing on ground or platform
 player_health = 100                        # health percentage (0-100)
+player_energy = 100.0                     # energy percentage (0-100)
+player_sprinting = False
 camera_x  = 0                              # horizontal scroll offset
 
 # How far the level extends to the right (in pixels)
-LEVEL_WIDTH = 40 * TILE
+LEVEL_WIDTH = 70 * TILE
 
 # Platforms: (start_col, width_in_tiles, height_offset from GROUND_ROW going up)
 PLATFORMS = [
     (8, 4, 2),    # platform 1: cols 8-11
     (14, 4, 4),   # platform 2: cols 14-17
     (20, 4, 6),   # platform 3: cols 20-23
+    (30, 4, 4),   # platform 4: cols 30-33
+    (36, 4, 4),   # platform 5: cols 36-39 (same height as 4)
+    (48, 4, 4),   # platform 6: cols 48-51
+    (54, 4, 6),   # platform 7: cols 54-57 (higher)
+    (60, 8, 2),   # platform 8: cols 60-67 (same height as platform 1, double width)
 ]
 
 # Build platform rects in pixel coords (top surface for collision)
@@ -471,21 +499,57 @@ for pcol, pw, poff in PLATFORMS:
 
 # Spike gaps sit directly between adjacent platforms (2 cols each)
 # Gap 1: cols 12-13, Gap 2: cols 18-19
-GAP_COLS = [(12, 13), (18, 19)]
+GAP_COLS = [(12, 13), (18, 19), (34, 35), (52, 53)]
+# Sunken spike pits — ground removed except bottom 2 dirt rows, spikes at pit floor
+PIT_COLS = [(43, 44)]
 
-# Spikes: 3 per gap, narrow
+# Spikes: fill each gap evenly
 SPIKE_W = 16
 SPIKE_H = 20
 spikes = []
 for gap_start, gap_end in GAP_COLS:
     gap_pixel_x = gap_start * TILE
     gap_pixel_w = (gap_end - gap_start + 1) * TILE
-    total_spikes_w = 3 * SPIKE_W
+    num_spikes = max(1, gap_pixel_w // (SPIKE_W + 4))
+    total_spikes_w = num_spikes * SPIKE_W
     margin = (gap_pixel_w - total_spikes_w) // 2
-    for i in range(3):
+    for i in range(num_spikes):
         sx = gap_pixel_x + margin + i * SPIKE_W
         sy = GROUND_ROW * TILE - SPIKE_H
         spikes.append(pygame.Rect(sx, sy, SPIKE_W, SPIKE_H))
+
+# Sunken pit spikes — sit on top of the 2 remaining dirt rows
+for pit_start, pit_end in PIT_COLS:
+    pit_pixel_x = pit_start * TILE
+    pit_pixel_w = (pit_end - pit_start + 1) * TILE
+    num_spikes = max(1, pit_pixel_w // (SPIKE_W + 4))
+    total_spikes_w = num_spikes * SPIKE_W
+    margin = (pit_pixel_w - total_spikes_w) // 2
+    for i in range(num_spikes):
+        sx = pit_pixel_x + margin + i * SPIKE_W
+        sy = (GROUND_ROW + 3) * TILE - SPIKE_H
+        spikes.append(pygame.Rect(sx, sy, SPIKE_W, SPIKE_H))
+
+# ── Coins ─────────────────────────────────────────────────────────────────
+# Place coins in the air between platform jumps
+def generate_coins():
+    coins = []
+    for i in range(len(PLATFORMS) - 1):
+        col1, w1, off1 = PLATFORMS[i]
+        col2, w2, off2 = PLATFORMS[i + 1]
+        # Gap between end of platform i and start of platform i+1
+        gap_start_x = (col1 + w1) * TILE
+        gap_end_x = col2 * TILE
+        if gap_end_x - gap_start_x < 2 * TILE:
+            continue  # skip if platforms are too close
+        mid_x = (gap_start_x + gap_end_x) // 2
+        higher_off = max(off1, off2)
+        cy = (GROUND_ROW - higher_off) * TILE - TILE - 20
+        coins.append({"x": mid_x - COIN_SIZE // 2 - 16, "y": cy, "collected": False})
+    return coins
+
+coins = generate_coins()
+coins[-1]["x"] += 20  # shift last coin (high plat → monkeys plat) right
 
 # ── Monkey enemies ────────────────────────────────────────────────────────
 MONKEY_W, MONKEY_H = 24, 36
@@ -498,13 +562,19 @@ BANANA_COLOR  = (255, 220, 50)
 BANANA_SPEED  = 3
 BANANA_THROW_INTERVAL = 180
 
-MONKEY_SPAWN_POSITIONS = [27 * TILE]
+PLATFORM8_Y = (GROUND_ROW - 2) * TILE - MONKEY_H
+MONKEY_SPAWN_POSITIONS = [
+    (27 * TILE, MONKEY_Y),
+    (41 * TILE, MONKEY_Y),
+    (62 * TILE, PLATFORM8_Y),
+    (65 * TILE, PLATFORM8_Y),
+]
 
 def init_monkeys():
     monkeys = []
-    for mx in MONKEY_SPAWN_POSITIONS:
+    for mx, my in MONKEY_SPAWN_POSITIONS:
         monkeys.append({
-            "x": mx, "y": MONKEY_Y, "alive": True,
+            "x": mx, "y": my, "alive": True,
             "throw_timer": BANANA_THROW_INTERVAL,
         })
     return monkeys
@@ -525,8 +595,8 @@ def draw_forest_level():
         pygame.draw.line(screen, (r, g, b), (0, y), (WIDTH, y))
 
     # Figure out which tile columns are visible
-    first_col = max(0, cx // TILE)
-    last_col = (cx + WIDTH) // TILE + 1
+    first_col = int(max(0, cx // TILE))
+    last_col = int((cx + WIDTH) // TILE + 1)
     total_cols = LEVEL_WIDTH // TILE
 
     # Ground tiles — full level width, only draw visible
@@ -535,6 +605,17 @@ def draw_forest_level():
             world_x = col * TILE
             sx = world_x - cx
             y = row * TILE
+            # Check if this column is a sunken pit
+            in_pit = False
+            for pit_s, pit_e in PIT_COLS:
+                if pit_s <= col <= pit_e:
+                    in_pit = True
+                    break
+            if in_pit:
+                # Only draw bottom 2 dirt rows
+                if row >= GROUND_ROW + 3:
+                    screen.blit(dirt_tile, (sx, y))
+                continue
             # Check if this column is under a platform
             under_platform = False
             for prect in platform_rects:
@@ -571,6 +652,11 @@ def draw_forest_level():
         # Black outline
         pygame.draw.polygon(screen, BLACK, [tip, left, right], 1)
 
+    # Coins
+    for coin in coins:
+        if not coin["collected"]:
+            screen.blit(coin_img, (coin["x"] - cx, coin["y"]))
+
     # Player rectangle
     pygame.draw.rect(screen, PLAYER_COLOR,   (player_x - cx, player_y, PLAYER_W, PLAYER_H))
     pygame.draw.rect(screen, PLAYER_OUTLINE, (player_x - cx, player_y, PLAYER_W, PLAYER_H), 3)
@@ -591,17 +677,57 @@ def draw_forest_level():
         pygame.draw.circle(screen, BANANA_COLOR, (bx, by), BANANA_RADIUS)
         pygame.draw.circle(screen, BLACK, (bx, by), BANANA_RADIUS, 1)
 
-    # Health bar — top right
-    HB_W, HB_H = 140, 16
-    hb_x = WIDTH - HB_W - 50
-    hb_y = 12
+    # HUD — top right: player icon + unified status box
+    HUD_PAD = 6
+    HUD_Y = 6
+    ICON_W, ICON_H = 16, 24
+    HB_W, HB_H = 100, 12
+    ROW_GAP = 6
+    YELLOW = (230, 210, 40)
+    hp_label = pixel_font_small.render("Health:", False, WHITE)
+    hp_pct = pixel_font_small.render(str(max(0, player_health)) + "%", False, WHITE)
+    en_label = pixel_font_small.render("Energy:", False, WHITE)
+    en_pct = pixel_font_small.render(str(int(player_energy)) + "%", False, WHITE)
+    coins_collected = sum(1 for c in coins if c["collected"])
+    coin_label = pixel_font_small.render("Coins: " + str(coins_collected), False, WHITE)
+    label_w = max(hp_label.get_width(), en_label.get_width())
+    row_h = max(hp_label.get_height(), HB_H)
+    box_w = HUD_PAD + label_w + 6 + HB_W + 6 + max(hp_pct.get_width(), en_pct.get_width()) + HUD_PAD
+    box_h = HUD_PAD + row_h + ROW_GAP + row_h + ROW_GAP + row_h + HUD_PAD
+    box_x = WIDTH - box_w - ICON_W - HUD_PAD * 2 - 8
+    # Player icon
+    icon_x = box_x - ICON_W - HUD_PAD
+    icon_y = HUD_Y + (box_h - ICON_H) // 2
+    pygame.draw.rect(screen, PLAYER_COLOR, (icon_x, icon_y, ICON_W, ICON_H))
+    pygame.draw.rect(screen, PLAYER_OUTLINE, (icon_x, icon_y, ICON_W, ICON_H), 2)
+    # Black box
+    pygame.draw.rect(screen, BLACK, (box_x, HUD_Y, box_w, box_h))
+    pygame.draw.rect(screen, WHITE, (box_x, HUD_Y, box_w, box_h), 1)
+    # Health row
+    row1_y = HUD_Y + HUD_PAD
+    lx = box_x + HUD_PAD
+    screen.blit(hp_label, (lx, row1_y + row_h // 2 - hp_label.get_height() // 2))
+    bar_x = lx + label_w + 6
+    bar_y = row1_y + row_h // 2 - HB_H // 2
     fill_w = int(HB_W * max(0, player_health) / 100)
-    pygame.draw.rect(screen, DARK_GREY, (hb_x, hb_y, HB_W, HB_H))
+    pygame.draw.rect(screen, DARK_GREY, (bar_x, bar_y, HB_W, HB_H))
     if fill_w > 0:
-        pygame.draw.rect(screen, GREEN, (hb_x, hb_y, fill_w, HB_H))
-    pygame.draw.rect(screen, BLACK, (hb_x, hb_y, HB_W, HB_H), 2)
-    hp_raw = pixel_font_small.render(str(max(0, player_health)) + "%", False, WHITE)
-    screen.blit(hp_raw, (hb_x + HB_W + 6, hb_y + HB_H // 2 - hp_raw.get_height() // 2))
+        pygame.draw.rect(screen, GREEN, (bar_x, bar_y, fill_w, HB_H))
+    pygame.draw.rect(screen, WHITE, (bar_x, bar_y, HB_W, HB_H), 1)
+    screen.blit(hp_pct, (bar_x + HB_W + 6, row1_y + row_h // 2 - hp_pct.get_height() // 2))
+    # Energy row
+    row2_y = row1_y + row_h + ROW_GAP
+    screen.blit(en_label, (lx, row2_y + row_h // 2 - en_label.get_height() // 2))
+    ebar_y = row2_y + row_h // 2 - HB_H // 2
+    efill_w = int(HB_W * max(0, player_energy) / 100)
+    pygame.draw.rect(screen, DARK_GREY, (bar_x, ebar_y, HB_W, HB_H))
+    if efill_w > 0:
+        pygame.draw.rect(screen, YELLOW, (bar_x, ebar_y, efill_w, HB_H))
+    pygame.draw.rect(screen, WHITE, (bar_x, ebar_y, HB_W, HB_H), 1)
+    screen.blit(en_pct, (bar_x + HB_W + 6, row2_y + row_h // 2 - en_pct.get_height() // 2))
+    # Coins row
+    row3_y = row2_y + row_h + ROW_GAP
+    screen.blit(coin_label, (lx, row3_y + row_h // 2 - coin_label.get_height() // 2))
 
 SETTINGS_LEFT_W  = 300
 SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W
@@ -625,6 +751,13 @@ modal_confirm_rect   = pygame.Rect(modal_rect.right - MODAL_BTN_W - 15,
                                    modal_rect.bottom - MODAL_BTN_H - 15, MODAL_BTN_W, MODAL_BTN_H)
 modal_cancel_rect    = pygame.Rect(modal_rect.left + 15,
                                    modal_rect.bottom - MODAL_BTN_H - 15, MODAL_BTN_W, MODAL_BTN_H)
+
+# Accessibility — display mode toggle
+DISPLAY_TOGGLE_X = SETTINGS_LEFT_W + 160
+DISPLAY_TOGGLE_Y = 84
+DISPLAY_TOGGLE_W = 120
+DISPLAY_TOGGLE_H = 26
+display_toggle_rect = pygame.Rect(DISPLAY_TOGGLE_X, DISPLAY_TOGGLE_Y, DISPLAY_TOGGLE_W, DISPLAY_TOGGLE_H)
 
 # Account settings username box
 username_box_rect = pygame.Rect(SETTINGS_LEFT_W + 145, 82, 180, 28)
@@ -729,6 +862,20 @@ def draw_settings(mouse_pos):
         # Percentage
         pixel_text(screen, str(int(master_volume * 100)) + "%", 1, WHITE,
                    SLIDER_X + SLIDER_W + 32, 86)
+
+    elif settings_category == "accessibility":
+        pixel_text(screen, "Accessibility Settings", 2, WHITE, rcx, 15)
+        pygame.draw.line(screen, WHITE,
+                         (SETTINGS_LEFT_W + 12, 57), (WIDTH - 12, 57), 1)
+
+        # Display mode row
+        pixel_text(screen, "Display", 1, WHITE, SETTINGS_LEFT_W + 55, 86)
+        pygame.draw.rect(screen, BLACK, display_toggle_rect)
+        pygame.draw.rect(screen, WHITE, display_toggle_rect, 2)
+        raw = pixel_font_small.render(display_mode, False, WHITE)
+        tx = display_toggle_rect.centerx - raw.get_width() // 2
+        ty = display_toggle_rect.centery - raw.get_height() // 2
+        screen.blit(raw, (tx, ty))
 
     elif settings_category == "performance":
         pixel_text(screen, "Performance Settings", 2, WHITE, rcx, 15)
@@ -910,6 +1057,8 @@ master_volume        = _saved.get("master_volume", 1.0)
 vsync_enabled        = _saved.get("vsync_enabled", False)
 max_fps              = _saved.get("max_fps", 120)
 alloted_ram          = max(RAM_MIN, min(RAM_MAX, _saved.get("alloted_ram", 2)))
+DISPLAY_MODES        = ["Off", "Windowed", "Fullscreen"]
+display_mode         = _saved.get("display_mode", "Windowed")
 click_sound.set_volume(master_volume)
 monkey_hit_sound.set_volume(master_volume)
 slider_dragging      = False
@@ -941,12 +1090,18 @@ while True:
             display_surf = pygame.display.set_mode(event.size, pygame.RESIZABLE)
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_F11:
+                # Reset to normal window first
+                display_surf = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+                hwnd = pygame.display.get_wm_info()["window"]
+                ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                 is_fullscreen = not is_fullscreen
                 if is_fullscreen:
+                    display_mode = "Fullscreen"
                     display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
                 else:
-                    display_surf = pygame.display.set_mode(
-                        (WIDTH, HEIGHT), pygame.RESIZABLE)
+                    display_mode = "Windowed"
+                    ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                save_settings()
             if show_delete_modal:
                 if event.key == pygame.K_ESCAPE:
                     show_delete_modal = False
@@ -1023,8 +1178,10 @@ while True:
                     player_y      = GROUND_Y
                     player_vy     = 0.0
                     player_health = 100
+                    player_energy = 100.0
                     camera_x      = 0
                     monkeys       = init_monkeys()
+                    coins         = generate_coins()
                     bananas       = []
                     state = STATE_FOREST
                 elif left_arrow_rect.collidepoint(mouse_pos):
@@ -1049,14 +1206,17 @@ while True:
                     player_dead      = False
                     player_on_ground = True
                     player_health    = 100
+                    player_energy    = 100.0
                     camera_x         = 0
                     monkeys          = init_monkeys()
+                    coins            = generate_coins()
                     bananas          = []
                     state = STATE_FOREST
                 elif death_exit_rect.collidepoint(mouse_pos):
                     click_sound.play()
                     player_dead = False
                     monkeys     = init_monkeys()
+                    coins       = generate_coins()
                     bananas     = []
                     state = STATE_LEVEL_SELECT
             elif state == STATE_SETTINGS:
@@ -1096,7 +1256,26 @@ while True:
                             click_sound.play()
                             settings_category = cat.lower()
                             break
-                    if settings_category == "audio":
+                    if settings_category == "accessibility":
+                        if display_toggle_rect.collidepoint(mouse_pos):
+                            click_sound.play()
+                            idx = DISPLAY_MODES.index(display_mode)
+                            display_mode = DISPLAY_MODES[(idx + 1) % len(DISPLAY_MODES)]
+                            # Always reset to a normal window first
+                            display_surf = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+                            hwnd = pygame.display.get_wm_info()["window"]
+                            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                            if display_mode == "Fullscreen":
+                                is_fullscreen = True
+                                display_surf = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                            elif display_mode == "Windowed":
+                                is_fullscreen = False
+                                ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                            else:  # Off
+                                is_fullscreen = False
+                                display_surf = pygame.display.set_mode((WIDTH, HEIGHT))
+                            save_settings()
+                    elif settings_category == "audio":
                         hit = pygame.Rect(SLIDER_X - 5, SLIDER_Y - 10, SLIDER_W + 10, SLIDER_H + 20)
                         if hit.collidepoint(mouse_pos):
                             slider_dragging = True
@@ -1147,10 +1326,20 @@ while True:
 
     if state == STATE_FOREST and not player_dead:
         keys = pygame.key.get_pressed()
+        moving = keys[pygame.K_LEFT] or keys[pygame.K_a] or keys[pygame.K_RIGHT] or keys[pygame.K_d]
+        player_sprinting = moving and (keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]) and player_energy > 0
+        speed = PLAYER_SPEED if player_sprinting else WALK_SPEED
+        # Energy: deplete while sprinting, refill while not sprinting
+        current_fps = max(1, clock.get_fps()) if clock.get_fps() > 0 else 60
+        energy_rate = 100.0 / (1.5 * current_fps)  # 1% per 1.5s
+        if player_sprinting:
+            player_energy = max(0.0, player_energy - energy_rate)
+        else:
+            player_energy = min(100.0, player_energy + energy_rate)
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            player_x = max(0, player_x - PLAYER_SPEED)
+            player_x = max(0, player_x - speed)
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            player_x = min(LEVEL_WIDTH - PLAYER_W, player_x + PLAYER_SPEED)
+            player_x = min(LEVEL_WIDTH - PLAYER_W, player_x + speed)
 
         # Update camera to follow player (keep player roughly centered)
         camera_x = max(0, min(player_x - WIDTH // 3, LEVEL_WIDTH - WIDTH))
@@ -1175,8 +1364,14 @@ while True:
         player_on_ground = False
         player_rect = pygame.Rect(player_x, player_y, PLAYER_W, PLAYER_H)
 
-        # Ground collision
-        if player_y >= GROUND_Y:
+        # Ground collision (skip if player is over a pit)
+        player_col = (player_x + PLAYER_W // 2) // TILE
+        in_pit = False
+        for pit_s, pit_e in PIT_COLS:
+            if pit_s <= player_col <= pit_e:
+                in_pit = True
+                break
+        if not in_pit and player_y >= GROUND_Y:
             player_y  = GROUND_Y
             player_vy = 0.0
             player_on_ground = True
@@ -1192,6 +1387,15 @@ while True:
                     player_vy = 0.0
                     player_on_ground = True
                     break
+
+        # Coin collection
+        player_rect = pygame.Rect(player_x, player_y, PLAYER_W, PLAYER_H)
+        for coin in coins:
+            if not coin["collected"]:
+                coin_rect = pygame.Rect(coin["x"], coin["y"], COIN_SIZE, COIN_SIZE)
+                if player_rect.colliderect(coin_rect):
+                    coin["collected"] = True
+                    click_sound.play()
 
         # Spike collision
         player_rect = pygame.Rect(player_x, player_y, PLAYER_W, PLAYER_H)
