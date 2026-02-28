@@ -75,7 +75,39 @@ def make_monkey_hit_sound():
 
 monkey_hit_sound = make_monkey_hit_sound()
 
+def make_fireball_sound():
+    """Short whoosh when fireball is launched."""
+    sample_rate = 44100
+    duration = 0.15
+    n = int(sample_rate * duration)
+    buf = array.array('h')
+    for i in range(n):
+        t = i / n
+        envelope = (1.0 - t) ** 1.5
+        freq = 200 + 400 * t
+        val = int(16000 * envelope * math.sin(2 * math.pi * freq * i / sample_rate))
+        buf.append(val)
+        buf.append(val)
+    return pygame.mixer.Sound(buffer=buf)
 
+fireball_sound = make_fireball_sound()
+
+def make_wall_of_fire_sound():
+    """Low rumble when wall of fire is placed."""
+    sample_rate = 44100
+    duration = 0.3
+    n = int(sample_rate * duration)
+    buf = array.array('h')
+    for i in range(n):
+        t = i / n
+        envelope = (1.0 - t) ** 2
+        freq = 100 + 150 * t
+        val = int(20000 * envelope * math.sin(2 * math.pi * freq * i / sample_rate))
+        buf.append(val)
+        buf.append(val)
+    return pygame.mixer.Sound(buffer=buf)
+
+wall_of_fire_sound = make_wall_of_fire_sound()
 
 # ── Profile ──────────────────────────────────────────────────────────────────
 PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile.json")
@@ -285,6 +317,10 @@ arrow_cy = card_rect.centery
 left_arrow_rect  = pygame.Rect(card_rect.left - 80,  arrow_cy - ARROW_H // 2, ARROW_W, ARROW_H)
 right_arrow_rect = pygame.Rect(card_rect.right + 25, arrow_cy - ARROW_H // 2, ARROW_W, ARROW_H)
 
+# Pause button (top-left during gameplay)
+PAUSE_BTN_SIZE = 36
+pause_btn_rect = pygame.Rect(10, 10, PAUSE_BTN_SIZE, PAUSE_BTN_SIZE)
+
 # Pause menu
 PAUSE_BOX_W, PAUSE_BOX_H = 340, 270
 pause_box_rect    = pygame.Rect(WIDTH // 2 - PAUSE_BOX_W // 2, HEIGHT // 2 - PAUSE_BOX_H // 2,
@@ -296,6 +332,19 @@ pause_exit_rect   = pygame.Rect(WIDTH // 2 - BTN_W // 2, pause_box_rect.y + 185,
 DEATH_BTN_W = 280
 death_retry_rect  = pygame.Rect(WIDTH // 2 - DEATH_BTN_W // 2, HEIGHT // 2 - 20, DEATH_BTN_W, BTN_H)
 death_exit_rect   = pygame.Rect(WIDTH // 2 - DEATH_BTN_W // 2, HEIGHT // 2 + 70, DEATH_BTN_W, BTN_H)
+
+# Ability HUD buttons — bottom-right corner
+ABILITY_BTN_SIZE = 56
+ABILITY_BTN_GAP  = 10
+ABILITY_BTN_Y    = HEIGHT - ABILITY_BTN_SIZE - 12
+ability_fireball_rect = pygame.Rect(
+    WIDTH - 2 * ABILITY_BTN_SIZE - ABILITY_BTN_GAP - 12,
+    ABILITY_BTN_Y,
+    ABILITY_BTN_SIZE, ABILITY_BTN_SIZE)
+ability_wallfire_rect = pygame.Rect(
+    WIDTH - ABILITY_BTN_SIZE - 12,
+    ABILITY_BTN_Y,
+    ABILITY_BTN_SIZE, ABILITY_BTN_SIZE)
 
 # Level data
 level_data = {
@@ -449,11 +498,27 @@ grass_dirt_tile = pygame.transform.scale(
 dirt_tile = pygame.transform.scale(
     pygame.image.load(os.path.join(ASSETS_DIR, "dirt.png")), (TILE, TILE))
 
+_spike_raw = pygame.image.load(os.path.join(ASSETS_DIR, "spikes.png")).convert_alpha()
+
+# Background tree sprites
+_leaves_raw = pygame.image.load(os.path.join(ASSETS_DIR, "leaves.png")).convert_alpha()
+_wood_raw   = pygame.image.load(os.path.join(ASSETS_DIR, "wood.png")).convert_alpha()
+
 COIN_SIZE = 20
 _coin_raw = pygame.image.load(os.path.join(ASSETS_DIR, "coin.png")).convert_alpha()
 _coin_raw = pygame.transform.scale(_coin_raw, (COIN_SIZE, COIN_SIZE))
 _coin_raw.set_colorkey((255, 255, 255))  # remove white pixels
 coin_img = _coin_raw
+
+# Fireball sprite
+FIREBALL_SIZE = 24
+_fireball_raw = pygame.image.load(os.path.join(ASSETS_DIR, "fireball.png")).convert_alpha()
+fireball_img = pygame.transform.scale(_fireball_raw, (FIREBALL_SIZE, FIREBALL_SIZE))
+fireball_img.set_colorkey((255, 255, 255))
+fireball_img_left = pygame.transform.flip(fireball_img, True, False)
+ABILITY_ICON_SIZE = 38
+fireball_icon = pygame.transform.scale(_fireball_raw, (ABILITY_ICON_SIZE, ABILITY_ICON_SIZE))
+fireball_icon.set_colorkey((255, 255, 255))
 
 # Player
 PLAYER_W, PLAYER_H = 28, 44
@@ -474,9 +539,112 @@ player_health = 100                        # health percentage (0-100)
 player_energy = 100.0                     # energy percentage (0-100)
 player_sprinting = False
 camera_x  = 0                              # horizontal scroll offset
+player_facing = 1                          # 1 = right, -1 = left
+
+# ── Fireball ability ──────────────────────────────────────────────────────
+FIREBALL_SPEED     = 6
+FIREBALL_DAMAGE    = 2
+FIREBALL_COOLDOWN  = 7.5            # seconds
+fireball_cooldown_remaining = 0.0
+fireballs = []
+
+# ── Wall of Fire ability ─────────────────────────────────────────────────
+WALL_FIRE_WIDTH    = 5 * TILE       # 160px
+WALL_FIRE_HEIGHT   = 2 * TILE       # 64px
+WALL_FIRE_OFFSET   = 5 * TILE       # placed 5 tiles right of player
+WALL_FIRE_DURATION = 3.0            # seconds
+WALL_FIRE_COOLDOWN = 10.0           # seconds
+WALL_FIRE_DAMAGE   = 2
+WALL_FIRE_COLOR    = (255, 100, 20)
+WALL_FIRE_COLOR2   = (255, 180, 40)
+wall_fire_cooldown_remaining = 0.0
+wall_of_fire = None                 # None or {"x", "y", "timer"} dict
 
 # How far the level extends to the right (in pixels)
-LEVEL_WIDTH = 70 * TILE
+LEVEL_WIDTH = 145 * TILE
+
+# ── Background foliage (trees + shrubs) ──────────────────────────────────
+_BG_TREE_ALPHA = 170  # slightly faded so they stay behind the main level
+
+# Fixed tree positions: (x_in_tiles, trunk_h, canopy_w, canopy_h)
+_BG_FOLIAGE_DATA = [
+    # ── Opening area ──
+    (1, 12, 4, 4),   (3, 8, 3, 3),    (5, 14, 5, 4),
+    (7, 6, 2, 2),    (10, 11, 4, 3),   (12, 9, 3, 3),
+    (15, 13, 4, 4),  (17, 7, 3, 2),    (19, 10, 3, 3),
+    # ── Mid-left ──
+    (22, 14, 5, 5),  (24, 5, 2, 2),    (26, 11, 4, 3),
+    (28, 8, 3, 3),   (31, 13, 4, 4),   (33, 6, 2, 2),
+    (35, 10, 3, 3),  (37, 14, 5, 4),   (39, 7, 3, 2),
+    # ── Mid section ──
+    (42, 12, 4, 4),  (46, 5, 2, 2),
+    (48, 13, 4, 3),  (50, 8, 3, 3),    (52, 11, 4, 4),
+    (55, 14, 5, 5),  (57, 6, 2, 2),    (59, 10, 3, 3),
+    # ── Mid-right ──
+    (62, 12, 4, 3),  (64, 7, 3, 2),    (66, 14, 5, 4),
+    (68, 9, 3, 3),   (70, 5, 2, 2),    (73, 13, 4, 4),
+    (75, 8, 3, 3),   (77, 11, 4, 3),   (79, 6, 2, 2),
+    # ── Right section ──
+    (82, 14, 5, 5),  (84, 10, 3, 3),   (86, 7, 3, 2),
+    (88, 12, 4, 4),  (90, 5, 2, 2),    (93, 13, 4, 3),
+    (95, 9, 3, 3),   (97, 11, 4, 4),   (99, 6, 2, 2),
+    # ── Boss arena area ──
+    (102, 14, 5, 4), (104, 8, 3, 3),   (107, 12, 4, 4),
+    (109, 10, 3, 3), (112, 14, 5, 5),  (114, 7, 3, 2),
+    (117, 13, 4, 4), (119, 9, 3, 3),   (121, 5, 2, 2),
+    (124, 14, 5, 4), (126, 11, 4, 3),  (128, 6, 2, 2),
+    (130, 12, 4, 4), (133, 8, 3, 3),   (135, 14, 5, 5),
+    (137, 10, 3, 3), (139, 7, 3, 2),   (142, 13, 4, 4),
+    # ── Shrubs (no trunk, just foliage on the ground) ──
+    (4, 0, 2, 1),    (9, 0, 1, 1),     (16, 0, 2, 1),
+    (25, 0, 1, 1),   (34, 0, 2, 1),    (41, 0, 1, 1),
+    (51, 0, 2, 1),   (58, 0, 1, 1),    (67, 0, 2, 1),
+    (74, 0, 1, 1),   (83, 0, 2, 1),    (92, 0, 1, 1),
+    (101, 0, 2, 1),  (111, 0, 1, 1),   (123, 0, 2, 1),
+    (132, 0, 1, 1),  (141, 0, 2, 1),
+]
+
+# Far layer — sits in the gaps between the front trees, more faded (distant)
+_BG_FAR_ALPHA = 90
+_BG_FAR_FOLIAGE_DATA = [
+    # Offset into the gaps of the front layer
+    (2, 10, 3, 3),   (4, 13, 4, 4),    (6, 7, 2, 2),
+    (8, 11, 3, 3),   (11, 14, 4, 4),   (13, 6, 2, 2),
+    (16, 12, 4, 3),  (18, 8, 3, 2),    (20, 10, 3, 3),
+    (23, 13, 4, 4),  (25, 7, 2, 2),    (27, 11, 3, 3),
+    (29, 14, 5, 4),  (32, 8, 3, 2),    (34, 12, 4, 3),
+    (36, 6, 2, 2),   (38, 13, 4, 4),   (40, 9, 3, 3),
+    (45, 11, 3, 3),  (47, 14, 5, 4),   (49, 7, 2, 2),
+    (51, 10, 3, 3),  (53, 13, 4, 4),   (56, 8, 3, 2),
+    (58, 12, 4, 3),  (60, 6, 2, 2),    (63, 11, 3, 3),
+    (65, 14, 5, 4),  (67, 8, 3, 2),    (69, 12, 4, 3),
+    (71, 7, 2, 2),   (74, 13, 4, 4),   (76, 10, 3, 3),
+    (78, 6, 2, 2),   (80, 14, 5, 4),   (83, 9, 3, 3),
+    (85, 11, 3, 3),  (87, 7, 2, 2),    (89, 13, 4, 4),
+    (91, 10, 3, 3),  (94, 14, 5, 4),   (96, 6, 2, 2),
+    (98, 12, 4, 3),  (100, 8, 3, 2),   (103, 11, 3, 3),
+    (105, 14, 5, 4), (108, 7, 2, 2),   (110, 13, 4, 4),
+    (113, 9, 3, 3),  (115, 12, 4, 3),  (118, 6, 2, 2),
+    (120, 14, 5, 4), (122, 10, 3, 3),  (125, 8, 3, 2),
+    (127, 13, 4, 4), (129, 7, 2, 2),   (131, 11, 3, 3),
+    (134, 14, 5, 4), (136, 9, 3, 3),   (138, 6, 2, 2),
+    (140, 12, 4, 3), (143, 10, 3, 3),
+]
+
+_bg_foliage_front = [{"x": col * TILE, "trunk_h": th, "canopy_w": cw, "canopy_h": ch}
+                     for col, th, cw, ch in _BG_FOLIAGE_DATA]
+_bg_foliage_far   = [{"x": col * TILE, "trunk_h": th, "canopy_w": cw, "canopy_h": ch}
+                     for col, th, cw, ch in _BG_FAR_FOLIAGE_DATA]
+
+def _make_faded(surface, alpha):
+    s = surface.copy()
+    s.set_alpha(alpha)
+    return s
+
+_wood_tile      = _make_faded(pygame.transform.scale(_wood_raw, (TILE, TILE)), _BG_TREE_ALPHA)
+_leaves_1x1     = _make_faded(pygame.transform.scale(_leaves_raw, (TILE, TILE)), _BG_TREE_ALPHA)
+_wood_tile_far  = _make_faded(pygame.transform.scale(_wood_raw, (TILE, TILE)), _BG_FAR_ALPHA)
+_leaves_1x1_far = _make_faded(pygame.transform.scale(_leaves_raw, (TILE, TILE)), _BG_FAR_ALPHA)
 
 # Platforms: (start_col, width_in_tiles, height_offset from GROUND_ROW going up)
 PLATFORMS = [
@@ -488,6 +656,10 @@ PLATFORMS = [
     (48, 4, 4),   # platform 6: cols 48-51
     (54, 4, 6),   # platform 7: cols 54-57 (higher)
     (60, 8, 2),   # platform 8: cols 60-67 (same height as platform 1, double width)
+    (70, 4, 4),   # platform 9: cols 70-73
+    (86, 4, 4),   # platform 10: cols 86-89 (after gorilla zone)
+    (92, 4, 6),   # platform 11: cols 92-95 (higher)
+    (98, 8, 6),   # platform 12: cols 98-105 (same height, gorilla patrol)
 ]
 
 # Build platform rects in pixel coords (top surface for collision)
@@ -497,15 +669,17 @@ for pcol, pw, poff in PLATFORMS:
     py = (GROUND_ROW - poff) * TILE
     platform_rects.append(pygame.Rect(px, py, pw * TILE, TILE))
 
+
 # Spike gaps sit directly between adjacent platforms (2 cols each)
 # Gap 1: cols 12-13, Gap 2: cols 18-19
-GAP_COLS = [(12, 13), (18, 19), (34, 35), (52, 53)]
+GAP_COLS = [(12, 13), (18, 19), (34, 35), (52, 53), (90, 91), (96, 97)]
 # Sunken spike pits — ground removed except bottom 2 dirt rows, spikes at pit floor
 PIT_COLS = [(43, 44)]
 
 # Spikes: fill each gap evenly
 SPIKE_W = 16
 SPIKE_H = 20
+spike_img = pygame.transform.scale(_spike_raw, (SPIKE_W, SPIKE_H))
 spikes = []
 for gap_start, gap_end in GAP_COLS:
     gap_pixel_x = gap_start * TILE
@@ -582,8 +756,60 @@ def init_monkeys():
 monkeys = init_monkeys()
 bananas = []
 
+# ── Gorilla enemies ──────────────────────────────────────────────────────
+GORILLA_W, GORILLA_H = 32, 44
+GORILLA_COLOR   = (30, 30, 30)
+GORILLA_OUTLINE = (80, 80, 80)
+GORILLA_SPEED   = 1.5
+GORILLA_MAX_HP  = 3
 
-def draw_forest_level():
+GORILLA_SPAWNS = [
+    # (x_start, patrol_width_in_tiles, y_position)
+    (75 * TILE, 10, GROUND_ROW * TILE - GORILLA_H),
+    (98 * TILE, 8, (GROUND_ROW - 6) * TILE - GORILLA_H),
+]
+
+def init_gorillas():
+    gorillas = []
+    for gx, patrol_tiles, gy in GORILLA_SPAWNS:
+        gorillas.append({
+            "x": float(gx),
+            "y": gy,
+            "patrol_left": gx,
+            "patrol_right": gx + patrol_tiles * TILE - GORILLA_W,
+            "vx": GORILLA_SPEED,
+            "hp": GORILLA_MAX_HP,
+            "hit": False,  # True after first stomp (shows health bar)
+            "alive": True,
+        })
+    return gorillas
+
+gorillas = init_gorillas()
+
+# ── Great Ape Boss ────────────────────────────────────────────────────────
+BOSS_W = 3 * TILE
+BOSS_H = 6 * TILE                          # same height as platform 12
+BOSS_COLOR = (120, 70, 30)
+BOSS_OUTLINE = (80, 45, 15)
+BOSS_SPEED = 1.5 * TILE / 60.0             # 1.5 tiles per second at 60fps
+BOSS_MAX_HP = 20
+BOSS_ARENA_LEFT = 106 * TILE
+BOSS_ARENA_RIGHT = 145 * TILE - BOSS_W
+
+def init_boss():
+    return {
+        "x": float(BOSS_ARENA_LEFT + 5 * TILE),
+        "y": GROUND_ROW * TILE - BOSS_H,
+        "vx": BOSS_SPEED,
+        "hp": BOSS_MAX_HP,
+        "hit": False,
+        "alive": True,
+    }
+
+boss = init_boss()
+
+
+def draw_forest_level(mouse_pos=(0, 0)):
     cx = camera_x  # local alias
 
     # Sky gradient (not scrolled)
@@ -594,18 +820,50 @@ def draw_forest_level():
         b = int(SKY_TOP[2] + (SKY_BOT[2] - SKY_TOP[2]) * t)
         pygame.draw.line(screen, (r, g, b), (0, y), (WIDTH, y))
 
+    # Background foliage — two layers for depth
+    ground_px = GROUND_ROW * TILE
+    # Far layer first (most faded, appears furthest away)
+    for tree in _bg_foliage_far:
+        tx = int(tree["x"] - cx)
+        canopy_total_w = tree["canopy_w"] * TILE
+        if tx + canopy_total_w < -TILE or tx - canopy_total_w > WIDTH + TILE:
+            continue
+        trunk_base_y = ground_px
+        for t_row in range(tree["trunk_h"]):
+            screen.blit(_wood_tile_far, (tx, trunk_base_y - (t_row + 1) * TILE))
+        canopy_bottom = trunk_base_y - tree["trunk_h"] * TILE
+        canopy_left = tx + TILE // 2 - (tree["canopy_w"] * TILE) // 2
+        for cr in range(tree["canopy_h"]):
+            for cc in range(tree["canopy_w"]):
+                screen.blit(_leaves_1x1_far, (canopy_left + cc * TILE, canopy_bottom - (cr + 1) * TILE))
+    # Front layer (less faded, appears closer)
+    for tree in _bg_foliage_front:
+        tx = int(tree["x"] - cx)
+        canopy_total_w = tree["canopy_w"] * TILE
+        if tx + canopy_total_w < -TILE or tx - canopy_total_w > WIDTH + TILE:
+            continue
+        trunk_base_y = ground_px
+        for t_row in range(tree["trunk_h"]):
+            screen.blit(_wood_tile, (tx, trunk_base_y - (t_row + 1) * TILE))
+        canopy_bottom = trunk_base_y - tree["trunk_h"] * TILE
+        canopy_left = tx + TILE // 2 - (tree["canopy_w"] * TILE) // 2
+        for cr in range(tree["canopy_h"]):
+            for cc in range(tree["canopy_w"]):
+                screen.blit(_leaves_1x1, (canopy_left + cc * TILE, canopy_bottom - (cr + 1) * TILE))
+
     # Figure out which tile columns are visible
     first_col = int(max(0, cx // TILE))
     last_col = int((cx + WIDTH) // TILE + 1)
     total_cols = LEVEL_WIDTH // TILE
 
     # Ground tiles — full level width, only draw visible
-    for row in range(GROUND_ROW, GROUND_ROW + 5):
+    # Extend rows enough to always cover the screen bottom
+    ground_rows_needed = (HEIGHT // TILE) + 2
+    for row in range(GROUND_ROW, GROUND_ROW + ground_rows_needed):
         for col in range(first_col, min(last_col, total_cols)):
             world_x = col * TILE
             sx = world_x - cx
-            y = row * TILE
-            # Check if this column is a sunken pit
+            y = row * TILE            # Check if this column is a sunken pit
             in_pit = False
             for pit_s, pit_e in PIT_COLS:
                 if pit_s <= col <= pit_e:
@@ -640,17 +898,9 @@ def draw_forest_level():
             for fill_y in range(prect.y + 2 * TILE, GROUND_ROW * TILE, TILE):
                 screen.blit(dirt_tile, (tx, fill_y))
 
-    # Spikes — white with black outline and light grey blend
+    # Spikes
     for sp in spikes:
-        tip   = (sp.x + sp.width // 2 - cx, sp.y)
-        left  = (sp.x - cx, sp.y + sp.height)
-        right = (sp.x + sp.width - cx, sp.y + sp.height)
-        # White fill
-        pygame.draw.polygon(screen, WHITE, [tip, left, right])
-        # Light grey inner border for pixel blending
-        pygame.draw.polygon(screen, DARK_GREY, [tip, left, right], 2)
-        # Black outline
-        pygame.draw.polygon(screen, BLACK, [tip, left, right], 1)
+        screen.blit(spike_img, (sp.x - cx, sp.y))
 
     # Coins
     for coin in coins:
@@ -676,6 +926,66 @@ def draw_forest_level():
         by = int(banana["y"])
         pygame.draw.circle(screen, BANANA_COLOR, (bx, by), BANANA_RADIUS)
         pygame.draw.circle(screen, BLACK, (bx, by), BANANA_RADIUS, 1)
+
+    # Fireballs
+    for fb in fireballs:
+        fbx = int(fb["x"] - cx)
+        fby = int(fb["y"])
+        if fb["vx"] >= 0:
+            screen.blit(fireball_img, (fbx, fby))
+        else:
+            screen.blit(fireball_img_left, (fbx, fby))
+
+    # Gorillas
+    for gorilla in gorillas:
+        if not gorilla["alive"]:
+            continue
+        gx = int(gorilla["x"] - cx)
+        gy = int(gorilla["y"])
+        pygame.draw.rect(screen, GORILLA_COLOR,   (gx, gy, GORILLA_W, GORILLA_H))
+        pygame.draw.rect(screen, GORILLA_OUTLINE, (gx, gy, GORILLA_W, GORILLA_H), 3)
+        # Health bar above head (only after first hit)
+        if gorilla["hit"] and gorilla["hp"] > 0:
+            ghb_w = GORILLA_W
+            ghb_h = 4
+            ghb_x = gx
+            ghb_y = gy - 8
+            fill = int(ghb_w * gorilla["hp"] / GORILLA_MAX_HP)
+            pygame.draw.rect(screen, DARK_GREY, (ghb_x, ghb_y, ghb_w, ghb_h))
+            pygame.draw.rect(screen, (220, 50, 50), (ghb_x, ghb_y, fill, ghb_h))
+            pygame.draw.rect(screen, BLACK, (ghb_x, ghb_y, ghb_w, ghb_h), 1)
+
+    # Wall of Fire
+    if wall_of_fire is not None:
+        wf_sx = int(wall_of_fire["x"] - cx)
+        wf_sy = int(wall_of_fire["y"])
+        wf_alpha = int(180 + 40 * math.sin(pygame.time.get_ticks() * 0.01))
+        wf_surf = pygame.Surface((WALL_FIRE_WIDTH, WALL_FIRE_HEIGHT), pygame.SRCALPHA)
+        wf_surf.fill((*WALL_FIRE_COLOR, min(255, wf_alpha)))
+        inner_margin = 8
+        pygame.draw.rect(wf_surf, (*WALL_FIRE_COLOR2, min(255, max(0, wf_alpha - 30))),
+                         (inner_margin, inner_margin,
+                          WALL_FIRE_WIDTH - 2 * inner_margin,
+                          WALL_FIRE_HEIGHT - 2 * inner_margin))
+        screen.blit(wf_surf, (wf_sx, wf_sy))
+        pygame.draw.rect(screen, BLACK, (wf_sx, wf_sy, WALL_FIRE_WIDTH, WALL_FIRE_HEIGHT), 2)
+
+    # Great Ape Boss
+    if boss["alive"]:
+        bx = int(boss["x"] - cx)
+        by = int(boss["y"])
+        pygame.draw.rect(screen, BOSS_COLOR,   (bx, by, BOSS_W, BOSS_H))
+        pygame.draw.rect(screen, BOSS_OUTLINE, (bx, by, BOSS_W, BOSS_H), 3)
+        # Health bar above head (only after first hit)
+        if boss["hit"] and boss["hp"] > 0:
+            bhb_w = BOSS_W
+            bhb_h = 6
+            bhb_x = bx
+            bhb_y = by - 10
+            fill = int(bhb_w * boss["hp"] / BOSS_MAX_HP)
+            pygame.draw.rect(screen, DARK_GREY, (bhb_x, bhb_y, bhb_w, bhb_h))
+            pygame.draw.rect(screen, (220, 50, 50), (bhb_x, bhb_y, fill, bhb_h))
+            pygame.draw.rect(screen, BLACK, (bhb_x, bhb_y, bhb_w, bhb_h), 1)
 
     # HUD — top right: player icon + unified status box
     HUD_PAD = 6
@@ -728,6 +1038,53 @@ def draw_forest_level():
     # Coins row
     row3_y = row2_y + row_h + ROW_GAP
     screen.blit(coin_label, (lx, row3_y + row_h // 2 - coin_label.get_height() // 2))
+
+    # Pause button — top left
+    pb_hovered = pause_btn_rect.collidepoint(mouse_pos)
+    pb_color = DARK_GREEN if pb_hovered else GREEN
+    pts = pixel_round_rect_points(pause_btn_rect, step=6)
+    pygame.draw.polygon(screen, pb_color, pts)
+    for i in range(len(pts)):
+        pygame.draw.line(screen, BLACK, pts[i], pts[(i + 1) % len(pts)], 3)
+    # Two vertical bars for pause icon
+    bar_w, bar_h = 6, 16
+    bx = pause_btn_rect.x
+    by = pause_btn_rect.y
+    bsz = PAUSE_BTN_SIZE
+    pygame.draw.rect(screen, BLACK, (bx + bsz // 2 - bar_w - 2, by + (bsz - bar_h) // 2, bar_w, bar_h))
+    pygame.draw.rect(screen, BLACK, (bx + bsz // 2 + 2, by + (bsz - bar_h) // 2, bar_w, bar_h))
+
+    # Ability HUD buttons — bottom-right
+    # Fireball button
+    fb_pts = pixel_round_rect_points(ability_fireball_rect, step=6)
+    pygame.draw.polygon(screen, GREEN, fb_pts)
+    for i in range(len(fb_pts)):
+        pygame.draw.line(screen, BLACK, fb_pts[i], fb_pts[(i + 1) % len(fb_pts)], 3)
+    icon_x = ability_fireball_rect.centerx - ABILITY_ICON_SIZE // 2
+    icon_y = ability_fireball_rect.centery - ABILITY_ICON_SIZE // 2
+    screen.blit(fireball_icon, (icon_x, icon_y))
+    # Fireball cooldown overlay
+    if fireball_cooldown_remaining > 0:
+        cd_frac = fireball_cooldown_remaining / FIREBALL_COOLDOWN
+        overlay_h = int(ABILITY_BTN_SIZE * cd_frac)
+        if overlay_h > 0:
+            cd_surf = pygame.Surface((ABILITY_BTN_SIZE, overlay_h), pygame.SRCALPHA)
+            cd_surf.fill((0, 0, 0, 153))
+            screen.blit(cd_surf, (ability_fireball_rect.x, ability_fireball_rect.y))
+
+    # Wall of Fire button (blank for now)
+    wf_pts = pixel_round_rect_points(ability_wallfire_rect, step=6)
+    pygame.draw.polygon(screen, GREEN, wf_pts)
+    for i in range(len(wf_pts)):
+        pygame.draw.line(screen, BLACK, wf_pts[i], wf_pts[(i + 1) % len(wf_pts)], 3)
+    # Wall of Fire cooldown overlay
+    if wall_fire_cooldown_remaining > 0:
+        cd_frac = wall_fire_cooldown_remaining / WALL_FIRE_COOLDOWN
+        overlay_h = int(ABILITY_BTN_SIZE * cd_frac)
+        if overlay_h > 0:
+            cd_surf = pygame.Surface((ABILITY_BTN_SIZE, overlay_h), pygame.SRCALPHA)
+            cd_surf.fill((0, 0, 0, 153))
+            screen.blit(cd_surf, (ability_wallfire_rect.x, ability_wallfire_rect.y))
 
 SETTINGS_LEFT_W  = 300
 SETTINGS_RIGHT_W = WIDTH - SETTINGS_LEFT_W
@@ -1151,6 +1508,26 @@ while True:
                     state = STATE_FOREST
             if event.key == pygame.K_SPACE and state == STATE_FOREST and player_on_ground:
                 player_vy = JUMP_FORCE
+            if event.key == pygame.K_r and state == STATE_FOREST and not player_dead:
+                if fireball_cooldown_remaining <= 0:
+                    fb_x = player_x + (PLAYER_W if player_facing > 0 else -FIREBALL_SIZE)
+                    fb_y = player_y + PLAYER_H // 2 - FIREBALL_SIZE // 2
+                    fireballs.append({"x": float(fb_x), "y": float(fb_y),
+                                      "vx": FIREBALL_SPEED * player_facing})
+                    fireball_cooldown_remaining = FIREBALL_COOLDOWN
+                    fireball_sound.set_volume(master_volume)
+                    fireball_sound.play()
+            if event.key == pygame.K_c and state == STATE_FOREST and not player_dead:
+                if wall_fire_cooldown_remaining <= 0:
+                    if player_x >= BOSS_ARENA_LEFT - 2 * TILE:
+                        wf_x = min(player_x + WALL_FIRE_OFFSET,
+                                   LEVEL_WIDTH - WALL_FIRE_WIDTH)
+                        wf_y = GROUND_ROW * TILE - WALL_FIRE_HEIGHT
+                        wall_of_fire = {"x": wf_x, "y": wf_y,
+                                        "timer": WALL_FIRE_DURATION}
+                        wall_fire_cooldown_remaining = WALL_FIRE_COOLDOWN
+                        wall_of_fire_sound.set_volume(master_volume)
+                        wall_of_fire_sound.play()
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if state == STATE_CREATE_PROFILE:
                 if confirm_btn_rect.collidepoint(mouse_pos):
@@ -1181,8 +1558,15 @@ while True:
                     player_energy = 100.0
                     camera_x      = 0
                     monkeys       = init_monkeys()
+                    gorillas      = init_gorillas()
+                    boss          = init_boss()
                     coins         = generate_coins()
                     bananas       = []
+                    fireballs     = []
+                    wall_of_fire  = None
+                    fireball_cooldown_remaining  = 0.0
+                    wall_fire_cooldown_remaining = 0.0
+                    player_facing = 1
                     state = STATE_FOREST
                 elif left_arrow_rect.collidepoint(mouse_pos):
                     click_sound.play()
@@ -1190,6 +1574,10 @@ while True:
                 elif right_arrow_rect.collidepoint(mouse_pos):
                     click_sound.play()
                     level_index = (level_index + 1) % len(levels)
+            elif state == STATE_FOREST:
+                if pause_btn_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    state = STATE_PAUSED
             elif state == STATE_PAUSED:
                 if pause_resume_rect.collidepoint(mouse_pos):
                     click_sound.play()
@@ -1209,15 +1597,29 @@ while True:
                     player_energy    = 100.0
                     camera_x         = 0
                     monkeys          = init_monkeys()
+                    gorillas         = init_gorillas()
+                    boss             = init_boss()
                     coins            = generate_coins()
                     bananas          = []
+                    fireballs        = []
+                    wall_of_fire     = None
+                    fireball_cooldown_remaining  = 0.0
+                    wall_fire_cooldown_remaining = 0.0
+                    player_facing    = 1
                     state = STATE_FOREST
                 elif death_exit_rect.collidepoint(mouse_pos):
                     click_sound.play()
                     player_dead = False
                     monkeys     = init_monkeys()
+                    gorillas    = init_gorillas()
+                    boss        = init_boss()
                     coins       = generate_coins()
                     bananas     = []
+                    fireballs   = []
+                    wall_of_fire = None
+                    fireball_cooldown_remaining  = 0.0
+                    wall_fire_cooldown_remaining = 0.0
+                    player_facing = 1
                     state = STATE_LEVEL_SELECT
             elif state == STATE_SETTINGS:
                 if show_delete_modal:
@@ -1336,14 +1738,21 @@ while True:
             player_energy = max(0.0, player_energy - energy_rate)
         else:
             player_energy = min(100.0, player_energy + energy_rate)
+        # Ability cooldowns
+        dt = 1.0 / current_fps
+        if fireball_cooldown_remaining > 0:
+            fireball_cooldown_remaining = max(0.0, fireball_cooldown_remaining - dt)
+        if wall_fire_cooldown_remaining > 0:
+            wall_fire_cooldown_remaining = max(0.0, wall_fire_cooldown_remaining - dt)
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
             player_x = max(0, player_x - speed)
+            player_facing = -1
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
             player_x = min(LEVEL_WIDTH - PLAYER_W, player_x + speed)
+            player_facing = 1
 
         # Update camera to follow player (keep player roughly centered)
         camera_x = max(0, min(player_x - WIDTH // 3, LEVEL_WIDTH - WIDTH))
-
         # Horizontal collision with platform walls (only when player is below platform top)
         pr = pygame.Rect(player_x, player_y, PLAYER_W, PLAYER_H)
         for prect in platform_rects:
@@ -1423,6 +1832,8 @@ while True:
                         and prev_feet_y <= monkey["y"]
                         and feet_y >= monkey["y"]):
                     monkey["alive"] = False
+                    coins.append({"x": monkey["x"] + MONKEY_W // 2 - COIN_SIZE // 2,
+                                  "y": monkey["y"], "collected": False})
                     monkey_hit_sound.set_volume(master_volume)
                     monkey_hit_sound.play()
                     player_vy = JUMP_FORCE * 0.7
@@ -1481,13 +1892,190 @@ while True:
                 bananas.remove(banana)
                 continue
             if player_rect.colliderect(banana_rect):
-                player_health -= 5
+                player_health -= 10
                 bananas.remove(banana)
                 if player_health <= 0:
                     player_health = 0
                     player_dead = True
                     state = STATE_DEAD
                 break
+
+        # Gorilla AI & collision
+        player_rect = pygame.Rect(player_x, player_y, PLAYER_W, PLAYER_H)
+        for gorilla in gorillas:
+            if not gorilla["alive"]:
+                continue
+            # Patrol movement
+            gorilla["x"] += gorilla["vx"]
+            if gorilla["x"] <= gorilla["patrol_left"]:
+                gorilla["x"] = gorilla["patrol_left"]
+                gorilla["vx"] = GORILLA_SPEED
+            elif gorilla["x"] >= gorilla["patrol_right"]:
+                gorilla["x"] = gorilla["patrol_right"]
+                gorilla["vx"] = -GORILLA_SPEED
+            gorilla_rect = pygame.Rect(gorilla["x"], gorilla["y"], GORILLA_W, GORILLA_H)
+            # Stomp detection: player falling onto gorilla from above
+            stomped = False
+            if player_vy >= 0:
+                feet_y = player_y + PLAYER_H
+                prev_feet_y = feet_y - player_vy
+                if (player_x + PLAYER_W > gorilla["x"]
+                        and player_x < gorilla["x"] + GORILLA_W
+                        and prev_feet_y <= gorilla["y"]
+                        and feet_y >= gorilla["y"]):
+                    gorilla["hp"] -= 1
+                    gorilla["hit"] = True
+                    player_vy = JUMP_FORCE * 0.6
+                    player_y = gorilla["y"] - PLAYER_H
+                    stomped = True
+                    if gorilla["hp"] <= 0:
+                        gorilla["alive"] = False
+                        for ci in range(5):
+                            coins.append({"x": gorilla["x"] + ci * (COIN_SIZE + 4),
+                                          "y": gorilla["y"], "collected": False})
+                        monkey_hit_sound.play()
+            # Side/bottom collision — one-shot kill
+            if not stomped and player_rect.colliderect(gorilla_rect):
+                player_health = 0
+                player_dead = True
+                state = STATE_DEAD
+                break
+
+        # Great Ape Boss AI & collision
+        if boss["alive"]:
+            boss["x"] += boss["vx"]
+            if boss["x"] <= BOSS_ARENA_LEFT + 3 * TILE:
+                boss["x"] = BOSS_ARENA_LEFT + 3 * TILE
+                boss["vx"] = BOSS_SPEED
+            elif boss["x"] >= BOSS_ARENA_RIGHT - 3 * TILE:
+                boss["x"] = BOSS_ARENA_RIGHT - 3 * TILE
+                boss["vx"] = -BOSS_SPEED
+            boss_rect = pygame.Rect(boss["x"], boss["y"], BOSS_W, BOSS_H)
+            # Stomp detection: player falling onto boss from above
+            boss_stomped = False
+            if player_vy >= 0:
+                feet_y = player_y + PLAYER_H
+                prev_feet_y = feet_y - player_vy
+                if (player_x + PLAYER_W > boss["x"]
+                        and player_x < boss["x"] + BOSS_W
+                        and prev_feet_y <= boss["y"]
+                        and feet_y >= boss["y"]):
+                    player_vy = JUMP_FORCE * 0.6
+                    player_y = boss["y"] - PLAYER_H
+                    boss_stomped = True
+                    boss["hp"] -= 1
+                    boss["hit"] = True
+                    monkey_hit_sound.play()
+                    if boss["hp"] <= 0:
+                        boss["alive"] = False
+            # Side/bottom collision — one-shot kill
+            if not boss_stomped and player_rect.colliderect(boss_rect):
+                player_health = 0
+                player_dead = True
+                state = STATE_DEAD
+
+        # Fireball movement & collision
+        for fb in fireballs[:]:
+            fb["x"] += fb["vx"]
+            if fb["x"] < -FIREBALL_SIZE or fb["x"] > LEVEL_WIDTH + FIREBALL_SIZE:
+                fireballs.remove(fb)
+                continue
+            fb_rect = pygame.Rect(fb["x"], fb["y"], FIREBALL_SIZE, FIREBALL_SIZE)
+            hit = False
+            # vs monkeys
+            for monkey in monkeys:
+                if not monkey["alive"]:
+                    continue
+                if fb_rect.colliderect(pygame.Rect(monkey["x"], monkey["y"], MONKEY_W, MONKEY_H)):
+                    monkey["alive"] = False
+                    coins.append({"x": monkey["x"] + MONKEY_W // 2 - COIN_SIZE // 2,
+                                  "y": monkey["y"], "collected": False})
+                    monkey_hit_sound.play()
+                    hit = True
+                    break
+            if hit:
+                fireballs.remove(fb)
+                continue
+            # vs gorillas
+            for gorilla in gorillas:
+                if not gorilla["alive"]:
+                    continue
+                if fb_rect.colliderect(pygame.Rect(gorilla["x"], gorilla["y"], GORILLA_W, GORILLA_H)):
+                    gorilla["hp"] -= FIREBALL_DAMAGE
+                    gorilla["hit"] = True
+                    if gorilla["hp"] <= 0:
+                        gorilla["alive"] = False
+                        for ci in range(5):
+                            coins.append({"x": gorilla["x"] + ci * (COIN_SIZE + 4),
+                                          "y": gorilla["y"], "collected": False})
+                    monkey_hit_sound.play()
+                    hit = True
+                    break
+            if hit:
+                fireballs.remove(fb)
+                continue
+            # vs boss
+            if boss["alive"]:
+                if fb_rect.colliderect(pygame.Rect(boss["x"], boss["y"], BOSS_W, BOSS_H)):
+                    boss["hp"] -= FIREBALL_DAMAGE
+                    boss["hit"] = True
+                    if boss["hp"] <= 0:
+                        boss["alive"] = False
+                    monkey_hit_sound.play()
+                    fireballs.remove(fb)
+                    continue
+            # vs platforms
+            for prect in platform_rects:
+                wall = pygame.Rect(prect.x, prect.y, prect.width, GROUND_ROW * TILE - prect.y)
+                if fb_rect.colliderect(wall):
+                    hit = True
+                    break
+            if hit:
+                fireballs.remove(fb)
+
+        # Wall of Fire timer & collision
+        if wall_of_fire is not None:
+            wall_of_fire["timer"] -= dt
+            if wall_of_fire["timer"] <= 0:
+                wall_of_fire = None
+            else:
+                wf_rect = pygame.Rect(wall_of_fire["x"], wall_of_fire["y"],
+                                      WALL_FIRE_WIDTH, WALL_FIRE_HEIGHT)
+                if "hit_ids" not in wall_of_fire:
+                    wall_of_fire["hit_ids"] = set()
+                # vs boss
+                if boss["alive"] and id(boss) not in wall_of_fire["hit_ids"]:
+                    if wf_rect.colliderect(pygame.Rect(boss["x"], boss["y"], BOSS_W, BOSS_H)):
+                        wall_of_fire["hit_ids"].add(id(boss))
+                        boss["hp"] -= 5
+                        boss["hit"] = True
+                        if boss["hp"] <= 0:
+                            boss["alive"] = False
+                        monkey_hit_sound.play()
+                # vs gorillas
+                for gorilla in gorillas:
+                    if not gorilla["alive"] or id(gorilla) in wall_of_fire["hit_ids"]:
+                        continue
+                    if wf_rect.colliderect(pygame.Rect(gorilla["x"], gorilla["y"], GORILLA_W, GORILLA_H)):
+                        wall_of_fire["hit_ids"].add(id(gorilla))
+                        gorilla["hp"] -= WALL_FIRE_DAMAGE
+                        gorilla["hit"] = True
+                        if gorilla["hp"] <= 0:
+                            gorilla["alive"] = False
+                            for ci in range(5):
+                                coins.append({"x": gorilla["x"] + ci * (COIN_SIZE + 4),
+                                              "y": gorilla["y"], "collected": False})
+                        monkey_hit_sound.play()
+                # vs monkeys
+                for monkey in monkeys:
+                    if not monkey["alive"] or id(monkey) in wall_of_fire["hit_ids"]:
+                        continue
+                    if wf_rect.colliderect(pygame.Rect(monkey["x"], monkey["y"], MONKEY_W, MONKEY_H)):
+                        wall_of_fire["hit_ids"].add(id(monkey))
+                        monkey["alive"] = False
+                        coins.append({"x": monkey["x"] + MONKEY_W // 2 - COIN_SIZE // 2,
+                                      "y": monkey["y"], "collected": False})
+                        monkey_hit_sound.play()
 
         # Fall off screen death
         if player_y > HEIGHT:
@@ -1508,12 +2096,12 @@ while True:
     elif state == STATE_LEVEL_SELECT:
         draw_level_select(mouse_pos)
     elif state == STATE_FOREST:
-        draw_forest_level()
+        draw_forest_level(mouse_pos)
     elif state == STATE_PAUSED:
-        draw_forest_level()
+        draw_forest_level(mouse_pos)
         draw_pause_menu(mouse_pos)
     elif state == STATE_DEAD:
-        draw_forest_level()
+        draw_forest_level(mouse_pos)
         draw_death_screen(mouse_pos)
 
     # Scale render surface to fill the entire display
