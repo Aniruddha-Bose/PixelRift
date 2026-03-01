@@ -547,6 +547,9 @@ sand_tile = pygame.transform.scale(
 
 _spike_raw = pygame.image.load(os.path.join(ASSETS_DIR, "spikes.png")).convert_alpha()
 
+# Monkey sprite — default faces left
+_monkey_raw = pygame.image.load(os.path.join(ASSETS_DIR, "monkey.png")).convert_alpha()
+
 # Background tree sprites
 _leaves_raw = pygame.image.load(os.path.join(ASSETS_DIR, "leaves.png")).convert_alpha()
 _wood_raw   = pygame.image.load(os.path.join(ASSETS_DIR, "wood.png")).convert_alpha()
@@ -608,7 +611,11 @@ wall_fire_cooldown_remaining = 0.0
 wall_of_fire = None                 # None or {"x", "y", "timer"} dict
 
 # ── Enemy dimensions (needed before level data load) ─────────────────────
-MONKEY_W, MONKEY_H = 24, 36
+MONKEY_W, MONKEY_H = 24, 48
+# Crop to visible content (x=11..20, y=5..28) then scale to hitbox size
+_monkey_cropped = _monkey_raw.subsurface(pygame.Rect(11, 5, 10, 24))
+monkey_img_left  = pygame.transform.scale(_monkey_cropped, (MONKEY_W, MONKEY_H))
+monkey_img_right = pygame.transform.flip(monkey_img_left, True, False)
 GORILLA_W, GORILLA_H = 32, 44
 BOSS_W = 3 * TILE
 BOSS_H = 6 * TILE
@@ -810,8 +817,7 @@ def _render_forest_thumbnail(target_w, target_h):
     # Monkeys
     for mx, my in MONKEY_SPAWN_POSITIONS:
         sx = mx - cam_x
-        pygame.draw.rect(buf, MONKEY_COLOR,   (sx, my, MONKEY_W, MONKEY_H))
-        pygame.draw.rect(buf, MONKEY_OUTLINE, (sx, my, MONKEY_W, MONKEY_H), 3)
+        buf.blit(monkey_img_left, (sx, my))
 
     # Gorillas
     for gx, patrol_tiles, gy in GORILLA_SPAWNS:
@@ -866,6 +872,7 @@ def init_monkeys():
         monkeys.append({
             "x": mx, "y": my, "alive": True,
             "throw_timer": BANANA_THROW_INTERVAL,
+            "facing": -1,  # -1 = left (default), 1 = right
         })
     return monkeys
 
@@ -1133,8 +1140,8 @@ def draw_forest_level(mouse_pos=(0, 0)):
             continue
         mx = monkey["x"] - cx
         my = monkey["y"]
-        pygame.draw.rect(screen, MONKEY_COLOR,   (mx, my, MONKEY_W, MONKEY_H))
-        pygame.draw.rect(screen, MONKEY_OUTLINE, (mx, my, MONKEY_W, MONKEY_H), 3)
+        img = monkey_img_left if monkey["facing"] == -1 else monkey_img_right
+        screen.blit(img, (mx, my))
 
     # Bananas
     for banana in bananas:
@@ -2143,6 +2150,9 @@ while True:
                         player_dead = True
                         state = STATE_DEAD
                     break
+
+                # Face toward player
+                monkey["facing"] = 1 if player_x > monkey["x"] else -1
 
                 # Throw banana toward player's current position
                 monkey["throw_timer"] -= 1
