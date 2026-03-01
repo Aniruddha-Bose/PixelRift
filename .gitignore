@@ -1,1 +1,4 @@
 .claude/
+__pycache__/
+progress.json
+settings.json
