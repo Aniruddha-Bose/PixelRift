@@ -6,6 +6,11 @@ import json
 import os
 import random
 import ctypes
+import threading
+try:
+    import requests
+except ImportError:
+    requests = None
 
 pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.init()
@@ -126,6 +131,7 @@ def load_profile():
 def save_profile(username):
     with open(PROFILE_PATH, "w") as f:
         json.dump({"username": username}, f)
+    cloud_save_async()
 
 # ── Progress persistence ──────────────────────────────────────────────────
 PROGRESS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "progress.json")
@@ -142,6 +148,7 @@ def load_progress():
 def save_progress(data):
     with open(PROGRESS_PATH, "w") as f:
         json.dump(data, f)
+    cloud_save_async()
 
 progress = load_progress()
 total_coins = progress.get("total_coins", 0)
@@ -170,6 +177,122 @@ def save_settings():
     }
     with open(SETTINGS_PATH, "w") as f:
         json.dump(data, f)
+
+# ── Firebase ─────────────────────────────────────────────────────────────────
+FIREBASE_API_KEY = "AIzaSyBZSmtcVase168O5_PkYoKUBpteYSwtDK0"
+FIREBASE_PROJECT_ID = "pixelrift-game"
+FIREBASE_AUTH_SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_API_KEY}"
+FIREBASE_AUTH_SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
+FIRESTORE_BASE_URL = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents"
+
+AUTH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth.json")
+
+# Firebase auth state
+firebase_uid = None
+firebase_id_token = None
+firebase_refresh_token = None
+firebase_email = None
+firebase_auth_error = ""
+firebase_loading = False
+firebase_loading_msg = ""
+
+def save_auth(uid, id_token, refresh_token, email):
+    with open(AUTH_PATH, "w") as f:
+        json.dump({"uid": uid, "id_token": id_token,
+                   "refresh_token": refresh_token, "email": email}, f)
+
+def load_auth():
+    if os.path.exists(AUTH_PATH):
+        try:
+            with open(AUTH_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+def clear_auth():
+    if os.path.exists(AUTH_PATH):
+        os.remove(AUTH_PATH)
+
+def firebase_sign_up(email, password):
+    resp = requests.post(FIREBASE_AUTH_SIGNUP_URL, json={
+        "email": email, "password": password, "returnSecureToken": True
+    }, timeout=10)
+    data = resp.json()
+    if "error" in data:
+        msg = data["error"].get("message", "Unknown error")
+        friendly = {
+            "EMAIL_EXISTS": "Email already in use",
+            "INVALID_EMAIL": "Invalid email address",
+            "WEAK_PASSWORD : Password should be at least 6 characters": "Password must be 6+ characters",
+            "OPERATION_NOT_ALLOWED": "Email sign-up disabled",
+        }
+        raise Exception(friendly.get(msg, msg.replace("_", " ").title()))
+    return data["localId"], data["idToken"], data["refreshToken"]
+
+def firebase_sign_in(email, password):
+    resp = requests.post(FIREBASE_AUTH_SIGNIN_URL, json={
+        "email": email, "password": password, "returnSecureToken": True
+    }, timeout=10)
+    data = resp.json()
+    if "error" in data:
+        msg = data["error"].get("message", "Unknown error")
+        friendly = {
+            "EMAIL_NOT_FOUND": "No account with that email",
+            "INVALID_PASSWORD": "Wrong password",
+            "USER_DISABLED": "Account has been disabled",
+            "INVALID_LOGIN_CREDENTIALS": "Wrong email or password",
+        }
+        raise Exception(friendly.get(msg, msg.replace("_", " ").title()))
+    return data["localId"], data["idToken"], data["refreshToken"]
+
+def firestore_save_progress(uid, id_token, progress_data, username):
+    url = f"{FIRESTORE_BASE_URL}/users/{uid}"
+    headers = {"Authorization": f"Bearer {id_token}"}
+    completion = progress_data.get("completion", {})
+    completion_fields = {}
+    for k, v in completion.items():
+        completion_fields[k] = {"integerValue": str(v)}
+    body = {
+        "fields": {
+            "username": {"stringValue": username or ""},
+            "total_coins": {"integerValue": str(progress_data.get("total_coins", 0))},
+            "completion": {"mapValue": {"fields": completion_fields}},
+        }
+    }
+    try:
+        resp = requests.patch(url, json=body, headers=headers, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[Firebase] Cloud save failed: {e}")
+
+def firestore_load_progress(uid, id_token):
+    url = f"{FIRESTORE_BASE_URL}/users/{uid}"
+    headers = {"Authorization": f"Bearer {id_token}"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code == 404:
+        return None, None
+    resp.raise_for_status()
+    data = resp.json()
+    fields = data.get("fields", {})
+    total_coins = int(fields.get("total_coins", {}).get("integerValue", "0"))
+    completion = {}
+    comp_fields = fields.get("completion", {}).get("mapValue", {}).get("fields", {})
+    for k, v in comp_fields.items():
+        completion[k] = int(v.get("integerValue", "0"))
+    username = fields.get("username", {}).get("stringValue", "")
+    return {"total_coins": total_coins, "completion": completion}, username
+
+def cloud_save_async():
+    if requests is None:
+        return
+    if firebase_uid and firebase_id_token:
+        t = threading.Thread(
+            target=firestore_save_progress,
+            args=(firebase_uid, firebase_id_token, progress, profile_username),
+            daemon=True
+        )
+        t.start()
 
 WIDTH, HEIGHT = 800, 600
 screen = pygame.Surface((WIDTH, HEIGHT))          # fixed-size render target
@@ -205,9 +328,10 @@ pixel_font_small = pygame.font.SysFont("Courier New", 16, bold=True)
 
 # Button dimensions
 BTN_W, BTN_H = 220, 70
-btn_rect          = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 - BTN_H // 2, BTN_W, BTN_H)
-settings_btn_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15, BTN_W, BTN_H)
-shop_btn_rect     = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15 + BTN_H + 15, BTN_W, BTN_H)
+btn_rect          = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 - BTN_H // 2 - 40, BTN_W, BTN_H)
+settings_btn_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15 - 40, BTN_W, BTN_H)
+shop_btn_rect     = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15 + BTN_H + 15 - 40, BTN_W, BTN_H)
+quit_btn_rect     = pygame.Rect(WIDTH // 2 - BTN_W // 2, HEIGHT // 2 + BTN_H // 2 + 15 + BTN_H + 15 + BTN_H + 15 - 40, BTN_W, BTN_H)
 
 def pixel_round_rect_points(rect, step=8):
     """Returns octagon points that simulate pixel-art stepped rounded corners."""
@@ -300,7 +424,7 @@ def make_logo():
 
 logo_surf = make_logo()
 
-def draw_home(hovered, settings_hovered, shop_hovered=False):
+def draw_home(hovered, settings_hovered, shop_hovered=False, quit_hovered=False):
     # Grey placeholder background
     screen.fill(GREY)
 
@@ -315,6 +439,7 @@ def draw_home(hovered, settings_hovered, shop_hovered=False):
     draw_pixel_button(screen, btn_rect, "Play", hovered)
     draw_pixel_button(screen, settings_btn_rect, "Settings", settings_hovered)
     draw_pixel_button(screen, shop_btn_rect, "Shop", shop_hovered)
+    draw_red_button(screen, quit_btn_rect, "Quit Game", quit_hovered)
 
     # Total coins — top-right corner
     coin_raw = pixel_font_small.render("Coins: " + str(total_coins), False, (0, 0, 0))
@@ -354,6 +479,18 @@ pause_box_rect    = pygame.Rect(WIDTH // 2 - PAUSE_BOX_W // 2, HEIGHT // 2 - PAU
                                 PAUSE_BOX_W, PAUSE_BOX_H)
 pause_resume_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, pause_box_rect.y + 100, BTN_W, BTN_H)
 pause_exit_rect   = pygame.Rect(WIDTH // 2 - BTN_W // 2, pause_box_rect.y + 185, BTN_W, BTN_H)
+
+# Quit confirmation menu
+QUIT_BOX_W, QUIT_BOX_H = 340, 200
+quit_box_rect = pygame.Rect(WIDTH // 2 - QUIT_BOX_W // 2, HEIGHT // 2 - QUIT_BOX_H // 2,
+                            QUIT_BOX_W, QUIT_BOX_H)
+QUIT_CONF_BTN_W, QUIT_CONF_BTN_H = 130, 55
+quit_no_rect  = pygame.Rect(quit_box_rect.x + 25,
+                             quit_box_rect.bottom - QUIT_CONF_BTN_H - 25,
+                             QUIT_CONF_BTN_W, QUIT_CONF_BTN_H)
+quit_yes_rect = pygame.Rect(quit_box_rect.right - QUIT_CONF_BTN_W - 25,
+                             quit_box_rect.bottom - QUIT_CONF_BTN_H - 25,
+                             QUIT_CONF_BTN_W, QUIT_CONF_BTN_H)
 
 # Death screen buttons
 DEATH_BTN_W = 280
@@ -483,43 +620,103 @@ def draw_level_select(mouse_pos):
     draw_cross_button(screen, cross_btn_rect, cross_btn_rect.collidepoint(mouse_pos))
 
 
-# ── Profile creation screen ───────────────────────────────────────────────────
+# ── Auth screen (Sign In / Sign Up) ───────────────────────────────────────────
 INPUT_MAX = 20
+AUTH_INPUT_W, AUTH_INPUT_H = 320, 44
+auth_email_rect = pygame.Rect(WIDTH // 2 - AUTH_INPUT_W // 2, 190, AUTH_INPUT_W, AUTH_INPUT_H)
+auth_pass_rect  = pygame.Rect(WIDTH // 2 - AUTH_INPUT_W // 2, 260, AUTH_INPUT_W, AUTH_INPUT_H)
+auth_user_rect  = pygame.Rect(WIDTH // 2 - AUTH_INPUT_W // 2, 330, AUTH_INPUT_W, AUTH_INPUT_H)
+AUTH_FOCUSED_EMAIL = 1
+AUTH_FOCUSED_PASS  = 2
+AUTH_FOCUSED_USER  = 3
+
+# Keep old rects for backward compatibility (confirm_btn_rect used elsewhere)
 INPUT_BOX_W, INPUT_BOX_H = 320, 52
 input_box_rect   = pygame.Rect(WIDTH // 2 - INPUT_BOX_W // 2, 230, INPUT_BOX_W, INPUT_BOX_H)
 confirm_btn_rect = pygame.Rect(WIDTH // 2 - BTN_W // 2, 310, BTN_W, BTN_H)
 
-def draw_create_profile(username_input, confirm_hovered, show_warning):
-    screen.fill(GREY)
-
-    # Logo
-    screen.blit(logo_surf, (WIDTH // 2 - logo_surf.get_width() // 2, 40))
-
-    # Heading
-    pixel_text(screen, "Create Profile", 2, BLACK, WIDTH // 2, 140)
-    pixel_text(screen, "Enter a username:", 1, DARK_GREY, WIDTH // 2, 195)
-
-    # Input box
-    pygame.draw.rect(screen, WHITE, input_box_rect)
-    pygame.draw.rect(screen, BLACK, input_box_rect, 3)
-
-    if username_input:
-        raw = pixel_font_small.render(username_input, False, BLACK)
-        txt = pygame.transform.scale(raw, (raw.get_width() * 2, raw.get_height() * 2))
-        ty = input_box_rect.centery - txt.get_height() // 2
-        screen.blit(txt, (input_box_rect.x + 10, ty))
+def _draw_input_text(text, rect, placeholder):
+    if text:
+        raw = pixel_font_small.render(text, False, BLACK)
     else:
-        raw = pixel_font_small.render("type here...", False, DARK_GREY)
-        txt = pygame.transform.scale(raw, (raw.get_width() * 2, raw.get_height() * 2))
-        ty = input_box_rect.centery - txt.get_height() // 2
-        screen.blit(txt, (input_box_rect.x + 10, ty))
+        raw = pixel_font_small.render(placeholder, False, DARK_GREY)
+    txt = pygame.transform.scale(raw, (raw.get_width() * 2, raw.get_height() * 2))
+    ty = rect.centery - txt.get_height() // 2
+    clip_w = rect.width - 20
+    if txt.get_width() > clip_w:
+        clip_rect = pygame.Rect(txt.get_width() - clip_w, 0, clip_w, txt.get_height())
+        screen.blit(txt, (rect.x + 10, ty), area=clip_rect)
+    else:
+        screen.blit(txt, (rect.x + 10, ty))
 
-    # Warning
-    if show_warning:
-        pixel_text(screen, "Username cannot be empty!", 1, (200, 60, 60),
-                   WIDTH // 2, input_box_rect.bottom + 6)
+def draw_auth_screen(mouse_pos):
+    screen.fill(GREY)
+    screen.blit(logo_surf, (WIDTH // 2 - logo_surf.get_width() // 2, 20))
 
-    draw_pixel_button(screen, confirm_btn_rect, "Confirm", confirm_hovered)
+    if auth_mode == "signin":
+        pixel_text(screen, "Sign In", 2, BLACK, WIDTH // 2, 110)
+    else:
+        pixel_text(screen, "Sign Up", 2, BLACK, WIDTH // 2, 110)
+
+    # Email label + input
+    pixel_text(screen, "Email", 1, DARK_GREY,
+               WIDTH // 2 - AUTH_INPUT_W // 2 + 30, auth_email_rect.y - 18)
+    border_e = LIGHT_GREEN if auth_focused_field == AUTH_FOCUSED_EMAIL else BLACK
+    pygame.draw.rect(screen, WHITE, auth_email_rect)
+    pygame.draw.rect(screen, border_e, auth_email_rect, 3)
+    _draw_input_text(auth_email_input, auth_email_rect, "email@example.com")
+
+    # Password label + input
+    pixel_text(screen, "Password", 1, DARK_GREY,
+               WIDTH // 2 - AUTH_INPUT_W // 2 + 45, auth_pass_rect.y - 18)
+    border_p = LIGHT_GREEN if auth_focused_field == AUTH_FOCUSED_PASS else BLACK
+    pygame.draw.rect(screen, WHITE, auth_pass_rect)
+    pygame.draw.rect(screen, border_p, auth_pass_rect, 3)
+    display_pass = "*" * len(auth_password_input)
+    _draw_input_text(display_pass, auth_pass_rect, "password")
+
+    # Username (signup only)
+    if auth_mode == "signup":
+        pixel_text(screen, "Username", 1, DARK_GREY,
+                   WIDTH // 2 - AUTH_INPUT_W // 2 + 45, auth_user_rect.y - 18)
+        border_u = LIGHT_GREEN if auth_focused_field == AUTH_FOCUSED_USER else BLACK
+        pygame.draw.rect(screen, WHITE, auth_user_rect)
+        pygame.draw.rect(screen, border_u, auth_user_rect, 3)
+        _draw_input_text(auth_username_input, auth_user_rect, "username")
+        submit_y = auth_user_rect.bottom + 25
+    else:
+        submit_y = auth_pass_rect.bottom + 30
+
+    # Submit button
+    _auth_submit_rect_local = pygame.Rect(WIDTH // 2 - BTN_W // 2, submit_y, BTN_W, BTN_H)
+    btn_label = "Sign Up" if auth_mode == "signup" else "Sign In"
+    draw_pixel_button(screen, _auth_submit_rect_local, btn_label,
+                      _auth_submit_rect_local.collidepoint(mouse_pos))
+
+    # Toggle link
+    toggle_y = submit_y + BTN_H + 15
+    if auth_mode == "signin":
+        toggle_text = "No account? Sign Up"
+    else:
+        toggle_text = "Have account? Sign In"
+    _auth_toggle_rect_local = pygame.Rect(WIDTH // 2 - 120, toggle_y, 240, 30)
+    toggle_hovered = _auth_toggle_rect_local.collidepoint(mouse_pos)
+    color = LIGHT_GREEN if toggle_hovered else DARK_GREY
+    pixel_text(screen, toggle_text, 1, color, WIDTH // 2, toggle_y + 5)
+
+    # Error message
+    if auth_error_msg:
+        pixel_text(screen, auth_error_msg, 1, RED, WIDTH // 2, toggle_y + 35)
+
+    # Loading overlay
+    if firebase_loading:
+        dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 140))
+        screen.blit(dim, (0, 0))
+        pixel_text(screen, firebase_loading_msg or "Loading...", 2, WHITE,
+                   WIDTH // 2, HEIGHT // 2 - 20)
+
+    return _auth_submit_rect_local, _auth_toggle_rect_local
 
 
 # Forest level tile colours
@@ -1251,6 +1448,12 @@ delete_account_btn_rect = pygame.Rect(
     SETTINGS_LEFT_W + (WIDTH - SETTINGS_LEFT_W) // 2 - DEL_BTN_W // 2,
     HEIGHT - DEL_BTN_H - 30, DEL_BTN_W, DEL_BTN_H)
 
+# Sign out button — above delete account
+SIGNOUT_BTN_W, SIGNOUT_BTN_H = 300, 55
+signout_btn_rect = pygame.Rect(
+    SETTINGS_LEFT_W + (WIDTH - SETTINGS_LEFT_W) // 2 - SIGNOUT_BTN_W // 2,
+    HEIGHT - DEL_BTN_H - 30 - SIGNOUT_BTN_H - 15, SIGNOUT_BTN_W, SIGNOUT_BTN_H)
+
 # Delete account confirmation modal
 DEL_MODAL_W, DEL_MODAL_H = 520, 240
 del_modal_rect = pygame.Rect(WIDTH // 2 - DEL_MODAL_W // 2, HEIGHT // 2 - DEL_MODAL_H // 2,
@@ -1338,11 +1541,13 @@ def draw_shop(mouse_pos):
     draw_cross_button(screen, cross_btn_rect, cross_btn_rect.collidepoint(mouse_pos))
 
     # Title
-    pixel_text(screen, "Shop", 3, WHITE, WIDTH // 2, 40)
-    pygame.draw.line(screen, WHITE, (40, 90), (WIDTH - 40, 90), 1)
+    pixel_text(screen, "Shop", 3, WHITE, WIDTH // 2, 20)
+    pygame.draw.line(screen, WHITE, (0, cross_btn_rect.bottom + 5), (WIDTH, cross_btn_rect.bottom + 5), 1)
 
-    # Coin balance
-    pixel_text(screen, "Coins: " + str(total_coins), 2, (240, 220, 50), WIDTH // 2, 120)
+    # Coin balance — top right
+    coin_raw = pixel_font_small.render("Coins: " + str(total_coins), False, (240, 220, 50))
+    coin_surf = pygame.transform.scale(coin_raw, (coin_raw.get_width() * 2, coin_raw.get_height() * 2))
+    screen.blit(coin_surf, (WIDTH - coin_surf.get_width() - 12, 12))
 
 def draw_settings(mouse_pos):
     screen.fill(GREY)
@@ -1473,6 +1678,21 @@ def draw_settings(mouse_pos):
             ty = username_box_rect.centery - raw.get_height() // 2
             screen.blit(raw, (username_box_rect.x + 6, ty))
 
+        # Cloud status
+        if firebase_email:
+            pixel_text(screen, "Signed in as", 1, DARK_GREY, rcx, 130)
+            pixel_text(screen, firebase_email, 1, WHITE, rcx, 152)
+            pygame.draw.circle(screen, GREEN, (SETTINGS_LEFT_W + 30, 145), 5)
+        else:
+            pixel_text(screen, "Playing offline", 1, DARK_GREY, rcx, 130)
+            pixel_text(screen, "(local saves only)", 1, DARK_GREY, rcx, 152)
+            pygame.draw.circle(screen, RED, (SETTINGS_LEFT_W + 30, 145), 5)
+
+        # Sign out button (only if signed in)
+        if firebase_email:
+            draw_red_button(screen, signout_btn_rect, "Sign Out",
+                            signout_btn_rect.collidepoint(mouse_pos))
+
         # Delete account button
         draw_red_button(screen, delete_account_btn_rect, "Delete Account",
                         delete_account_btn_rect.collidepoint(mouse_pos))
@@ -1560,6 +1780,22 @@ def draw_pause_menu(mouse_pos):
                       pause_exit_rect.collidepoint(mouse_pos))
 
 
+def draw_quit_confirm(mouse_pos):
+    """Quit Game confirmation overlay — similar to the pause menu."""
+    overlay = pygame.Surface((QUIT_BOX_W, QUIT_BOX_H), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 210))
+    screen.blit(overlay, quit_box_rect.topleft)
+
+    # "Quit Game?" heading
+    pixel_text(screen, "Quit Game?", 3, WHITE, WIDTH // 2, quit_box_rect.y + 25)
+
+    # "No" (red, left)  /  "Yes" (green, right)
+    draw_red_button(screen, quit_no_rect, "No",
+                    quit_no_rect.collidepoint(mouse_pos))
+    draw_pixel_button(screen, quit_yes_rect, "Yes",
+                      quit_yes_rect.collidepoint(mouse_pos))
+
+
 def draw_death_screen(mouse_pos):
     # Full-screen semi-transparent red overlay (60% opacity)
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1604,12 +1840,13 @@ STATE_LEVEL_SELECT   = "level_select"
 STATE_FOREST         = "forest"
 STATE_PAUSED         = "paused"
 STATE_SETTINGS       = "settings"
-STATE_CREATE_PROFILE = "create_profile"
+STATE_AUTH = "auth"
 STATE_DEAD           = "dead"
 STATE_WIN            = "win"
 STATE_SHOP           = "shop"
 STATE_DESERT         = "desert"
-state = STATE_CREATE_PROFILE if profile_username is None else STATE_HOME
+STATE_QUIT_CONFIRM   = "quit_confirm"
+state = STATE_AUTH if profile_username is None else STATE_HOME
 current_level = "Forest"  # tracks which level is active (for pause/death/win)
 win_coins = 0  # coins earned on level completion (shown on win screen)
 
@@ -1634,6 +1871,112 @@ show_username_modal  = False
 show_delete_modal    = False
 username_modal_input = ""
 
+# Auth screen state
+auth_mode = "signin"
+auth_email_input = ""
+auth_password_input = ""
+auth_username_input = ""
+auth_error_msg = ""
+auth_focused_field = AUTH_FOCUSED_EMAIL
+_auth_submit_rect = None
+_auth_toggle_rect = None
+
+# Restore cached Firebase session
+_cached_auth = load_auth()
+if _cached_auth:
+    firebase_uid = _cached_auth.get("uid")
+    firebase_id_token = _cached_auth.get("id_token")
+    firebase_refresh_token = _cached_auth.get("refresh_token")
+    firebase_email = _cached_auth.get("email")
+    # If we have auth + profile, go straight to home
+    if profile_username is not None:
+        state = STATE_HOME
+
+def _auth_submit():
+    global firebase_uid, firebase_id_token, firebase_refresh_token, firebase_email
+    global firebase_loading, firebase_loading_msg
+    global profile_username, progress, total_coins, state, auth_error_msg
+
+    email = auth_email_input.strip()
+    password = auth_password_input
+
+    if not email or not password:
+        auth_error_msg = "Email and password required"
+        return
+    if auth_mode == "signup" and not auth_username_input.strip():
+        auth_error_msg = "Username required"
+        return
+    if auth_mode == "signup" and len(password) < 6:
+        auth_error_msg = "Password must be 6+ chars"
+        return
+    if requests is None:
+        auth_error_msg = "requests library not installed"
+        return
+
+    firebase_loading = True
+    firebase_loading_msg = "Signing up..." if auth_mode == "signup" else "Signing in..."
+
+    def _do_auth():
+        global firebase_uid, firebase_id_token, firebase_refresh_token, firebase_email
+        global profile_username, progress, total_coins, state
+        global firebase_loading, auth_error_msg
+
+        try:
+            if auth_mode == "signup":
+                uid, token, refresh = firebase_sign_up(email, password)
+                firebase_uid = uid
+                firebase_id_token = token
+                firebase_refresh_token = refresh
+                firebase_email = email
+                save_auth(uid, token, refresh, email)
+
+                profile_username = auth_username_input.strip()
+                with open(PROFILE_PATH, "w") as f:
+                    json.dump({"username": profile_username}, f)
+
+                progress = {"total_coins": 0, "completion": {}}
+                total_coins = 0
+                with open(PROGRESS_PATH, "w") as f:
+                    json.dump(progress, f)
+
+                firestore_save_progress(uid, token, progress, profile_username)
+                state = STATE_HOME
+            else:
+                uid, token, refresh = firebase_sign_in(email, password)
+                firebase_uid = uid
+                firebase_id_token = token
+                firebase_refresh_token = refresh
+                firebase_email = email
+                save_auth(uid, token, refresh, email)
+
+                firebase_loading_msg = "Loading progress..."
+                cloud_progress, cloud_username = firestore_load_progress(uid, token)
+
+                if cloud_progress is not None:
+                    progress = cloud_progress
+                    total_coins = progress.get("total_coins", 0)
+                    with open(PROGRESS_PATH, "w") as f:
+                        json.dump(progress, f)
+                    if cloud_username:
+                        profile_username = cloud_username
+                        with open(PROFILE_PATH, "w") as f:
+                            json.dump({"username": profile_username}, f)
+                else:
+                    if not profile_username:
+                        profile_username = email.split("@")[0][:INPUT_MAX]
+                    with open(PROFILE_PATH, "w") as f:
+                        json.dump({"username": profile_username}, f)
+                    firestore_save_progress(uid, token, progress, profile_username)
+
+                state = STATE_HOME
+            auth_error_msg = ""
+        except Exception as e:
+            auth_error_msg = str(e)
+        finally:
+            firebase_loading = False
+
+    threading.Thread(target=_do_auth, daemon=True).start()
+
 
 def map_mouse(raw, disp_w, disp_h):
     """Map display-space mouse coords to 800x600 render-space coords."""
@@ -1648,6 +1991,7 @@ while True:
     hovered          = btn_rect.collidepoint(mouse_pos)          and state == STATE_HOME
     settings_hovered = settings_btn_rect.collidepoint(mouse_pos) and state == STATE_HOME
     shop_hovered     = shop_btn_rect.collidepoint(mouse_pos)     and state == STATE_HOME
+    quit_hovered     = quit_btn_rect.collidepoint(mouse_pos)     and state == STATE_HOME
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -1687,22 +2031,30 @@ while True:
                     username_modal_input = ""
                 elif len(username_modal_input) < INPUT_MAX and event.unicode.isprintable():
                     username_modal_input += event.unicode
-            elif state == STATE_CREATE_PROFILE:
-                if event.key == pygame.K_RETURN:
-                    if username_input.strip():
-                        profile_username = username_input.strip()
-                        save_profile(profile_username)
-                        click_sound.play()
-                        state = STATE_HOME
-                        show_profile_warning = False
+            elif state == STATE_AUTH and not firebase_loading:
+                if event.key == pygame.K_TAB:
+                    if auth_mode == "signup":
+                        auth_focused_field = (auth_focused_field % 3) + 1
                     else:
-                        show_profile_warning = True
+                        auth_focused_field = (auth_focused_field % 2) + 1
+                elif event.key == pygame.K_RETURN:
+                    _auth_submit()
                 elif event.key == pygame.K_BACKSPACE:
-                    username_input = username_input[:-1]
-                    show_profile_warning = False
-                elif len(username_input) < INPUT_MAX and event.unicode.isprintable():
-                    username_input += event.unicode
-                    show_profile_warning = False
+                    if auth_focused_field == AUTH_FOCUSED_EMAIL:
+                        auth_email_input = auth_email_input[:-1]
+                    elif auth_focused_field == AUTH_FOCUSED_PASS:
+                        auth_password_input = auth_password_input[:-1]
+                    elif auth_focused_field == AUTH_FOCUSED_USER:
+                        auth_username_input = auth_username_input[:-1]
+                    auth_error_msg = ""
+                elif event.unicode.isprintable() and event.unicode:
+                    if auth_focused_field == AUTH_FOCUSED_EMAIL and len(auth_email_input) < 50:
+                        auth_email_input += event.unicode
+                    elif auth_focused_field == AUTH_FOCUSED_PASS and len(auth_password_input) < 50:
+                        auth_password_input += event.unicode
+                    elif auth_focused_field == AUTH_FOCUSED_USER and len(auth_username_input) < INPUT_MAX:
+                        auth_username_input += event.unicode
+                    auth_error_msg = ""
             if event.key == pygame.K_ESCAPE and not show_username_modal and not show_delete_modal:
                 if state == STATE_SETTINGS:
                     click_sound.play()
@@ -1711,6 +2063,9 @@ while True:
                     click_sound.play()
                     state = STATE_HOME
                 elif state == STATE_LEVEL_SELECT:
+                    click_sound.play()
+                    state = STATE_HOME
+                elif state == STATE_QUIT_CONFIRM:
                     click_sound.play()
                     state = STATE_HOME
                 elif state in (STATE_FOREST, STATE_DESERT):
@@ -1742,16 +2097,21 @@ while True:
                         wall_of_fire_sound.set_volume(master_volume)
                         wall_of_fire_sound.play()
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if state == STATE_CREATE_PROFILE:
-                if confirm_btn_rect.collidepoint(mouse_pos):
-                    if username_input.strip():
-                        profile_username = username_input.strip()
-                        save_profile(profile_username)
-                        click_sound.play()
-                        state = STATE_HOME
-                        show_profile_warning = False
-                    else:
-                        show_profile_warning = True
+            if state == STATE_AUTH and not firebase_loading:
+                if auth_email_rect.collidepoint(mouse_pos):
+                    auth_focused_field = AUTH_FOCUSED_EMAIL
+                elif auth_pass_rect.collidepoint(mouse_pos):
+                    auth_focused_field = AUTH_FOCUSED_PASS
+                elif auth_mode == "signup" and auth_user_rect.collidepoint(mouse_pos):
+                    auth_focused_field = AUTH_FOCUSED_USER
+                elif _auth_submit_rect and _auth_submit_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    _auth_submit()
+                elif _auth_toggle_rect and _auth_toggle_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    auth_mode = "signup" if auth_mode == "signin" else "signin"
+                    auth_error_msg = ""
+                    auth_focused_field = AUTH_FOCUSED_EMAIL
             elif state == STATE_HOME and hovered:
                 click_sound.play()
                 state = STATE_LEVEL_SELECT
@@ -1761,6 +2121,16 @@ while True:
             elif state == STATE_HOME and shop_hovered:
                 click_sound.play()
                 state = STATE_SHOP
+            elif state == STATE_HOME and quit_hovered:
+                click_sound.play()
+                state = STATE_QUIT_CONFIRM
+            elif state == STATE_QUIT_CONFIRM:
+                if quit_no_rect.collidepoint(mouse_pos):
+                    click_sound.play()
+                    state = STATE_HOME
+                elif quit_yes_rect.collidepoint(mouse_pos):
+                    pygame.quit()
+                    sys.exit()
             elif state == STATE_SHOP:
                 if cross_btn_rect.collidepoint(mouse_pos):
                     click_sound.play()
@@ -1913,12 +2283,21 @@ while True:
                             os.remove(SETTINGS_PATH)
                         if os.path.exists(PROGRESS_PATH):
                             os.remove(PROGRESS_PATH)
+                        firebase_uid = None
+                        firebase_id_token = None
+                        firebase_refresh_token = None
+                        firebase_email = None
+                        clear_auth()
                         total_coins = 0
                         progress = {"total_coins": 0}
                         profile_username = None
                         username_input = ""
+                        auth_email_input = ""
+                        auth_password_input = ""
+                        auth_username_input = ""
+                        auth_error_msg = ""
                         show_delete_modal = False
-                        state = STATE_CREATE_PROFILE
+                        state = STATE_AUTH
                 elif show_username_modal:
                     if modal_confirm_rect.collidepoint(mouse_pos):
                         if username_modal_input.strip():
@@ -1984,7 +2363,14 @@ while True:
                             t = max(0.0, min(1.0, (mouse_pos[0] - RAM_SLIDER_X) / SLIDER_W))
                             alloted_ram = max(RAM_MIN, min(RAM_MAX, round(RAM_MIN + t * (RAM_MAX - RAM_MIN))))
                     elif settings_category == "account":
-                        if delete_account_btn_rect.collidepoint(mouse_pos):
+                        if firebase_email and signout_btn_rect.collidepoint(mouse_pos):
+                            click_sound.play()
+                            firebase_uid = None
+                            firebase_id_token = None
+                            firebase_refresh_token = None
+                            firebase_email = None
+                            clear_auth()
+                        elif delete_account_btn_rect.collidepoint(mouse_pos):
                             click_sound.play()
                             show_delete_modal = True
                         elif username_box_rect.collidepoint(mouse_pos):
@@ -2416,11 +2802,13 @@ while True:
                 if fb["x"] < -FIREBALL_SIZE or fb["x"] > DESERT_WIDTH + FIREBALL_SIZE:
                     fireballs.remove(fb)
 
-    if state == STATE_CREATE_PROFILE:
-        confirm_hovered = confirm_btn_rect.collidepoint(mouse_pos)
-        draw_create_profile(username_input, confirm_hovered, show_profile_warning)
+    if state == STATE_AUTH:
+        _auth_submit_rect, _auth_toggle_rect = draw_auth_screen(mouse_pos)
     elif state == STATE_HOME:
-        draw_home(hovered, settings_hovered, shop_hovered)
+        draw_home(hovered, settings_hovered, shop_hovered, quit_hovered)
+    elif state == STATE_QUIT_CONFIRM:
+        draw_home(False, False, False, False)
+        draw_quit_confirm(mouse_pos)
     elif state == STATE_SHOP:
         draw_shop(mouse_pos)
     elif state == STATE_SETTINGS:
